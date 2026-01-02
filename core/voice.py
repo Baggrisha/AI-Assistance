@@ -7,7 +7,7 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 import torch
-from transformers import pipeline
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
 
 class VoiceRecorder:
@@ -74,12 +74,26 @@ class HFWhisperRecognizer:
         self.device = device
         self.language = language
 
+        dtype = torch.float16 if torch.cuda.is_available() and device != "cpu" else torch.float32
+
+        self.processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+        self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            self.model_id,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        )
+
+        if device != "cpu":
+            self.model = self.model.to(device)
+
         self.pipe = pipeline(
             "automatic-speech-recognition",
-            model=self.model_id,
+            model=self.model,
+            tokenizer=getattr(self.processor, "tokenizer", self.processor),
+            feature_extractor=getattr(self.processor, "feature_extractor", self.processor),
             chunk_length_s=30,
             device=self.device,
-            torch_dtype=torch.float16 if torch.cuda.is_available() and device != "cpu" else torch.float32,
+            dtype=dtype,
             trust_remote_code=True,
         )
 
