@@ -1,7 +1,7 @@
 import datetime
 
 from tools.system import open_app, pause_media, set_volume, change_volume, play_media, next_media, previous_media, \
-    mute_system, get_weather, get_degrees, add_remind, set_timer
+    mute_system, get_weather, get_degrees, add_remind, set_timer, stopwatch, get_local_weather
 
 ACTION_MAP = {
     "open_app": lambda a: open_app(a["name"]),
@@ -15,10 +15,12 @@ ACTION_MAP = {
     "un_mute": lambda a:  mute_system(False),
     "get_date": lambda a:  mute_system(False),
     "get_time": lambda a:  mute_system(False),
-    "get_weather": lambda a:  get_weather(a["city"]),
+    "get_weather": lambda a:  get_weather(a["city"], a["when"]),
+    "get_local_weather": lambda a: get_local_weather(a["when"]),
     "get_degrees": lambda a:  get_degrees(a["city"]),
     "add_remind": lambda a: add_remind(a["title"], a["notes"], a["due_date"]),
     "set_timer": lambda a: set_timer(a["seconds"]),
+    "stopwatch": lambda a: stopwatch(a["cmd"]),
 }
 
 
