@@ -62,9 +62,14 @@ class VoiceRecorder:
 
 
 class HFWhisperRecognizer:
-    """ASR через Hugging Face pipeline (Whisper)."""
+    """ASR через Hugging Face pipeline (модели Hugging Face)."""
 
-    def __init__(self, model_id: str = "openai/whisper-small", device: str = "cpu", language: str = "ru"):
+    def __init__(
+        self,
+        model_id: str = "ai-sage/GigaAM-v3",
+        device: str = "cpu",
+        language: str = "ru",
+    ):
         self.model_id = model_id
         self.device = device
         self.language = language
@@ -75,11 +80,12 @@ class HFWhisperRecognizer:
             chunk_length_s=30,
             device=self.device,
             torch_dtype=torch.float16 if torch.cuda.is_available() and device != "cpu" else torch.float32,
+            trust_remote_code=True,
         )
 
     @classmethod
     def from_env(cls, env: dict[str, str]) -> Optional["HFWhisperRecognizer"]:
-        model = env.get("HF_ASR_MODEL", "").strip() or "openai/whisper-small"
+        model = env.get("HF_ASR_MODEL", "").strip() or "ai-sage/GigaAM-v3"
         device = env.get("HF_ASR_DEVICE", "").strip() or ("cuda" if torch.cuda.is_available() else "cpu")
         return cls(model_id=model, device=device)
 

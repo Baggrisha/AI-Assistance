@@ -133,11 +133,11 @@ MINI_MODEL="gemma3:4b"
 MAIN_MODEL="gemma3:4b"
 HF_TOKEN=TOKEN
 VOICE_ENABLED="0"
-HF_ASR_MODEL="openai/whisper-small"
+HF_ASR_MODEL="ai-sage/GigaAM-v3"
 HF_ASR_DEVICE="cpu"
 ```
 
-Для голосового ввода укажите модель Hugging Face Whisper (по умолчанию `openai/whisper-small`). Кнопка записи в интерфейсе автоматически активируется, если модель указана в `.env`.
+Для голосового ввода укажите модель Hugging Face ASR (по умолчанию `ai-sage/GigaAM-v3`). Кнопка записи в интерфейсе автоматически активируется, если модель указана в `.env`. Если модель приватная, добавьте `HF_TOKEN`.
 
 ---
 
@@ -210,7 +210,7 @@ It combines:
 * 🧠 System command execution
 * 🔀 Intelligent intent routing
 * 🔊 Voice responses
-* 🎙 Voice input powered by Hugging Face Whisper (ASR)
+* 🎙 Voice input powered by Hugging Face ASR (GigaAM)
 * 🪟 Siri / ChatGPT–style GUI
 * 🧩 Modular architecture
 * 🛠 Easy model switching
@@ -240,11 +240,11 @@ MINI_MODEL="gemma3:4b"
 MAIN_MODEL="gemma3:4b"
 HF_TOKEN=TOKEN
 VOICE_ENABLED="0"
-HF_ASR_MODEL="openai/whisper-small"
+HF_ASR_MODEL="ai-sage/GigaAM-v3"
 HF_ASR_DEVICE="cpu"  # или cuda, если доступно
 ```
 
-Set the Whisper model (and optional device) to enable the microphone button in the GUI.
+Set the Hugging Face ASR model (defaults to `ai-sage/GigaAM-v3`, add `HF_TOKEN` if needed) and optional device to enable the microphone button in the GUI.
 
 ---
 

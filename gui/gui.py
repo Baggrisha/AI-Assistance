@@ -416,7 +416,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_mic = QtWidgets.QToolButton()
         self.btn_mic.setText("🎙")
-        self.btn_mic.setToolTip("Запись и распознавание через Hugging Face Whisper")
+        self.btn_mic.setToolTip("Запись и распознавание через Hugging Face (ai-sage/GigaAM-v3)")
         self.btn_mic.setCheckable(True)
         self.btn_mic.setFocusPolicy(QtCore.Qt.NoFocus)
         self.btn_mic.setStyleSheet(
