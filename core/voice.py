@@ -5,11 +5,9 @@ import wave
 from typing import Optional
 
 import numpy as np
-import requests
 import sounddevice as sd
-
-
-DEFAULT_GIGAAM_URL = "https://gigachat.devices.sberbank.ru/api/v1/speech:recognize"
+import torch
+from transformers import pipeline
 
 
 class VoiceRecorder:
@@ -63,47 +61,33 @@ class VoiceRecorder:
         return buff.getvalue(), self.sample_rate
 
 
-class GigaAMRecognizer:
-    """HTTP-клиент для GigaAM ASR. Требует токен и endpoint."""
+class HFWhisperRecognizer:
+    """ASR через Hugging Face pipeline (Whisper)."""
 
-    def __init__(self, api_key: str, url: str = DEFAULT_GIGAAM_URL, language: str = "ru"):
-        if not api_key:
-            raise ValueError("GigaAM API key is required")
-
-        self.api_key = api_key
-        self.url = url
+    def __init__(self, model_id: str = "openai/whisper-small", device: str = "cpu", language: str = "ru"):
+        self.model_id = model_id
+        self.device = device
         self.language = language
-        self.session = requests.Session()
+
+        self.pipe = pipeline(
+            "automatic-speech-recognition",
+            model=self.model_id,
+            chunk_length_s=30,
+            device=self.device,
+            torch_dtype=torch.float16 if torch.cuda.is_available() and device != "cpu" else torch.float32,
+        )
 
     @classmethod
-    def from_env(cls, env: dict[str, str]) -> Optional["GigaAMRecognizer"]:
-        token = env.get("GIGAAM_TOKEN", "").strip()
-        url = env.get("GIGAAM_URL", DEFAULT_GIGAAM_URL).strip()
-        if not token:
-            return None
-        return cls(api_key=token, url=url)
+    def from_env(cls, env: dict[str, str]) -> Optional["HFWhisperRecognizer"]:
+        model = env.get("HF_ASR_MODEL", "").strip() or "openai/whisper-small"
+        device = env.get("HF_ASR_DEVICE", "").strip() or ("cuda" if torch.cuda.is_available() else "cpu")
+        return cls(model_id=model, device=device)
 
     def transcribe(self, wav_bytes: bytes, sample_rate: int) -> str:
         if not wav_bytes:
             return ""
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-        }
-        files = {
-            "file": ("speech.wav", wav_bytes, "audio/wav"),
-        }
-        data = {"language": self.language, "sample_rate": str(sample_rate)}
-
-        resp = self.session.post(self.url, headers=headers, data=data, files=files, timeout=60)
-        resp.raise_for_status()
-
-        try:
-            payload = resp.json()
-        except Exception:
-            return resp.text.strip()
-
-        for key in ("text", "result", "transcript"):
-            if key in payload and payload[key]:
-                return str(payload[key]).strip()
-        return ""
+        audio = {"array": np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0, "sampling_rate": sample_rate}
+        result = self.pipe(audio, generate_kwargs={"language": self.language})
+        text = result.get("text") if isinstance(result, dict) else None
+        return text.strip() if text else ""

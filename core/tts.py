@@ -14,8 +14,8 @@ class SileroTTSStreamer:
     def __init__(
         self,
         speaker: str = "kseniya",
-        sample_rate: int = 48000,
-        min_chars: int = 10,
+        sample_rate: int = 24000,
+        min_chars: int = 25,
         debug: bool = False,
         auto_flush_sec: float = 0.8,  # быстрее начинаем говорить
     ):
@@ -105,11 +105,7 @@ class SileroTTSStreamer:
                 # коротко — копим дальше
                 break
 
-        # если нет точки, но текст уже есть — шлём, чтобы звук начался сразу
-        normalized_tail = " ".join(self._buf.split()).strip()
-        if normalized_tail and len(normalized_tail) >= self.min_chars:
-            self._q.put(normalized_tail)
-            self._buf = ""
+        # избегаем озвучки по слогам: без точки ждём автофлаша
 
     def _flush_internal(self, reason="manual"):
         tail = " ".join(self._buf.split()).strip()

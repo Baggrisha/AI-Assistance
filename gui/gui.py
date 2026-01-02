@@ -5,7 +5,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from gui.styles import VIKA_QSS
 from tools.env_tools import read_env, write_env, get_ollama_models
-from core.voice import VoiceRecorder, GigaAMRecognizer
+from core.voice import VoiceRecorder, HFWhisperRecognizer
 
 
 class VoiceOrb(QtWidgets.QWidget):
@@ -229,7 +229,7 @@ class TranscribeWorker(QtCore.QObject):
     finished = QtCore.Signal(str)
     error = QtCore.Signal(str)
 
-    def __init__(self, recognizer: GigaAMRecognizer, audio_bytes: bytes, sample_rate: int):
+    def __init__(self, recognizer: HFWhisperRecognizer, audio_bytes: bytes, sample_rate: int):
         super().__init__()
         self.recognizer = recognizer
         self.audio_bytes = audio_bytes
@@ -340,7 +340,7 @@ class SettingsTab(QtWidgets.QWidget):
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, agent, env_path: str = ".env", recognizer: GigaAMRecognizer | None = None):
+    def __init__(self, agent, env_path: str = ".env", recognizer: HFWhisperRecognizer | None = None):
         super().__init__()
         self.agent = agent
         self.env_path = env_path
@@ -416,7 +416,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_mic = QtWidgets.QToolButton()
         self.btn_mic.setText("🎙")
-        self.btn_mic.setToolTip("Запись и распознавание через GigaAM")
+        self.btn_mic.setToolTip("Запись и распознавание через Hugging Face Whisper")
         self.btn_mic.setCheckable(True)
         self.btn_mic.setFocusPolicy(QtCore.Qt.NoFocus)
         self.btn_mic.setStyleSheet(
@@ -426,7 +426,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if not self.recognizer:
             self.btn_mic.setEnabled(False)
-            self.btn_mic.setToolTip("GigaAM не настроен (добавь GIGAAM_TOKEN в .env)")
+            self.btn_mic.setToolTip("ASR не настроен (проверь HF_ASR_MODEL в .env)")
 
         self.btn_send = QtWidgets.QToolButton()
         self.btn_send.setText("➤")
