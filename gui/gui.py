@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import io
 import math
+import wave
+
+import numpy as np
+import sounddevice as sd
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from core.stt import GigaAMSpeechToText
 from gui.styles import VIKA_QSS
 from tools.env_tools import read_env, write_env, get_ollama_models
 
@@ -192,6 +198,77 @@ class TypingBubble(QtWidgets.QFrame):
         self.setMaximumWidth(max(220, int(w)))
 
 
+class AudioRecorder(QtCore.QObject):
+    error = QtCore.Signal(str)
+
+    def __init__(self, sample_rate: int = 16000, channels: int = 1, parent=None):
+        super().__init__(parent)
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self._frames: list[np.ndarray] = []
+        self._stream: sd.InputStream | None = None
+
+    def start(self):
+        self._frames = []
+        try:
+            self._stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                callback=self._callback,
+            )
+            self._stream.start()
+        except Exception as e:
+            self._stream = None
+            self.error.emit(str(e))
+
+    def _callback(self, indata, frames, time_info, status):
+        if status:
+            # Сохраняем предупреждение, но не останавливаем запись
+            print("Audio status:", status)
+        self._frames.append(indata.copy())
+
+    def stop(self) -> bytes:
+        if self._stream:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            finally:
+                self._stream = None
+
+        if not self._frames:
+            return b""
+
+        audio = np.concatenate(self._frames, axis=0)
+        audio = np.clip(audio, -1.0, 1.0)
+        audio_int16 = np.int16(audio * 32767)
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(2)
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(audio_int16.tobytes())
+        return buf.getvalue()
+
+
+class TranscribeWorker(QtCore.QObject):
+    finished = QtCore.Signal(str)
+    error = QtCore.Signal(str)
+
+    def __init__(self, stt_client: GigaAMSpeechToText, audio_bytes: bytes):
+        super().__init__()
+        self.stt_client = stt_client
+        self.audio_bytes = audio_bytes
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            text = self.stt_client.transcribe(self.audio_bytes)
+            self.finished.emit(text)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class StreamWorker(QtCore.QObject):
     chunk = QtCore.Signal(str)
     done = QtCore.Signal()
@@ -219,7 +296,7 @@ class StreamWorker(QtCore.QObject):
         tts = getattr(self.agent, "tts", None)
         if tts:
             try:
-                tts.close(wait=False)
+                tts.stop_playback()
             except Exception:
                 pass
 
@@ -320,10 +397,11 @@ class SettingsTab(QtWidgets.QWidget):
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, agent, env_path: str = ".env"):
+    def __init__(self, agent, env_path: str = ".env", stt_client: GigaAMSpeechToText | None = None):
         super().__init__()
         self.agent = agent
         self.env_path = env_path
+        self.stt_client = stt_client
 
         self.setWindowTitle("Асистент Вика")
         self.resize(980, 740)
@@ -378,6 +456,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.voice_orb = VoiceOrb(enabled=voice_enabled)
         pill_l.addWidget(self.voice_orb)
 
+        self.btn_record = QtWidgets.QToolButton()
+        self.btn_record.setText("🎙")
+        self.btn_record.setToolTip("Голосовой ввод (GigaAM)")
+        self.btn_record.setCheckable(True)
+        self.btn_record.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.btn_record.setStyleSheet(
+            "QToolButton { background: transparent; border: none; padding: 8px 10px; }"
+            "QToolButton:hover { background: rgba(255,255,255,0.10); border-radius: 16px; }"
+            "QToolButton:checked { background: rgba(10,132,255,0.14); border-radius: 16px; }"
+        )
+        pill_l.addWidget(self.btn_record)
+
         self.input = QtWidgets.QTextEdit()
         self.input.setObjectName("Input")
         self.input.setPlaceholderText("Напиши сообщение…  (Enter=Send, Shift+Enter=новая строка)")
@@ -425,14 +515,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._typing: TypingBubble | None = None
         self._thread: QtCore.QThread | None = None
         self._worker: StreamWorker | None = None
+        self._stt_thread: QtCore.QThread | None = None
+        self._stt_worker: TranscribeWorker | None = None
 
         # bubble sizing (75% of chat viewport)
         self._bubble_width_ratio = 0.75
+
+        # voice input
+        self.recorder = AudioRecorder(parent=self)
+        self.recorder.error.connect(self.on_transcribe_error)
+        self._is_recording = False
 
         # signals
         self.btn_send.clicked.connect(self.on_send)
         self.btn_stop.clicked.connect(self.on_stop)
         self.voice_orb.toggled.connect(self.on_voice_toggle)
+        self.btn_record.clicked.connect(self.on_record_toggle)
         self.input.installEventFilter(self)
 
         # initial tts flag
@@ -489,9 +587,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.voice_orb.set_enabled(enabled)
         if not enabled:
             self.voice_orb.set_active(False)
+            tts = getattr(self.agent, "tts", None)
+            if tts:
+                try:
+                    tts.stop_playback()
+                except Exception:
+                    pass
 
     def on_send(self):
         prompt = self.input.toPlainText().strip()
+        self._submit_prompt(prompt)
+
+    def _submit_prompt(self, prompt: str):
         if not prompt:
             return
 
@@ -536,6 +643,60 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._thread.start()
 
+    def on_record_toggle(self):
+        if self._is_recording:
+            self._finish_recording()
+            return
+
+        if not self.stt_client:
+            self.status.setText("Нет настроек GigaAM для распознавания")
+            self.btn_record.setChecked(False)
+            return
+
+        self.status.setText("Запись…")
+        self.btn_record.setText("⏹")
+        self._is_recording = True
+        self.recorder.start()
+
+    def _finish_recording(self):
+        audio = self.recorder.stop()
+        self._is_recording = False
+        self.btn_record.setChecked(False)
+        self.btn_record.setText("🎙")
+
+        if not audio:
+            self.status.setText("Нет аудио для распознавания")
+            return
+
+        self._start_transcription(audio)
+
+    def _start_transcription(self, audio: bytes):
+        if not self.stt_client:
+            self.status.setText("GigaAM не настроен")
+            return
+
+        if self._stt_thread:
+            self._stt_thread.quit()
+            self._stt_thread.wait()
+            self._stt_thread = None
+
+        self.status.setText("GigaAM: распознаю…")
+        self._stt_thread = QtCore.QThread(self)
+        self._stt_worker = TranscribeWorker(self.stt_client, audio)
+        self._stt_worker.moveToThread(self._stt_thread)
+
+        self._stt_thread.started.connect(self._stt_worker.run)
+        self._stt_worker.finished.connect(self.on_transcribed)
+        self._stt_worker.error.connect(self.on_transcribe_error)
+
+        self._stt_worker.finished.connect(self._stt_thread.quit)
+        self._stt_worker.error.connect(self._stt_thread.quit)
+        self._stt_worker.finished.connect(self._stt_worker.deleteLater)
+        self._stt_worker.error.connect(self._stt_worker.deleteLater)
+        self._stt_thread.finished.connect(self._stt_thread.deleteLater)
+
+        self._stt_thread.start()
+
     def _remove_typing(self):
         if self._typing:
             self._typing.hide()
@@ -553,6 +714,24 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._active_bot:
             self._active_bot.append(chunk)
             self.chat.scroll_to_bottom()
+
+    def on_transcribed(self, text: str):
+        self._stt_thread = None
+        self._stt_worker = None
+        self.status.setText("Готово")
+        cleaned = text.strip()
+        if cleaned:
+            self._submit_prompt(cleaned)
+        else:
+            self.status.setText("GigaAM не распознал речь")
+
+    def on_transcribe_error(self, msg: str):
+        self._stt_thread = None
+        self._stt_worker = None
+        self.status.setText(f"STT ошибка: {msg}")
+        self.btn_record.setChecked(False)
+        self.btn_record.setText("🎙")
+        self._is_recording = False
 
     def on_done(self):
         self._remove_typing()
@@ -578,4 +757,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.voice_orb.set_active(False)
+        tts = getattr(self.agent, "tts", None)
+        if tts:
+            try:
+                tts.stop_playback()
+            except Exception:
+                pass
 

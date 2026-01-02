@@ -2,6 +2,7 @@ from brain.support_model import MiniCommandModel
 from tools.env_tools import load_settings
 from brain.client import LLMClient
 from core.agent import Agent
+from core.stt import GigaAMSpeechToText
 
 from PySide6.QtWidgets import QApplication
 from gui.gui import MainWindow
@@ -20,9 +21,11 @@ if __name__ == "__main__":
 
     tts = SileroTTSStreamer(
         speaker="kseniya",
-        min_chars=12,
+        min_chars=8,
         debug=True
     )
+
+    stt = GigaAMSpeechToText()
 
     agent = Agent(
         llm=llm_client,
@@ -31,6 +34,6 @@ if __name__ == "__main__":
     )
 
     app = QApplication([])                # ✅ правильно
-    window = MainWindow(agent, env_path=".env")
+    window = MainWindow(agent, env_path=".env", stt_client=stt)
     window.show()
     app.exec()                            # ✅ правильно
