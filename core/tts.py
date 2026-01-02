@@ -17,7 +17,7 @@ class SileroTTSStreamer:
         sample_rate: int = 48000,
         min_chars: int = 10,
         debug: bool = False,
-        auto_flush_sec: float = 1.5,  # если долго нет точки — озвучиваем накопленное
+        auto_flush_sec: float = 0.8,  # быстрее начинаем говорить
     ):
         self.speaker = speaker
         self.sample_rate = sample_rate
@@ -37,6 +37,8 @@ class SileroTTSStreamer:
 
         self._q: "queue.Queue[str | None]" = queue.Queue()
         self._stop = threading.Event()
+        self._muted = False
+        self._shutdown = threading.Event()
 
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
@@ -45,7 +47,7 @@ class SileroTTSStreamer:
         self._ticker.start()
 
     def _run(self):
-        while True:
+        while not self._shutdown.is_set():
             text = self._q.get()
             if text is None:
                 self._q.task_done()
@@ -53,6 +55,10 @@ class SileroTTSStreamer:
 
             text = text.strip()
             if not text:
+                self._q.task_done()
+                continue
+
+            if self._muted:
                 self._q.task_done()
                 continue
 
@@ -74,7 +80,10 @@ class SileroTTSStreamer:
                 self._flush_internal(reason="auto")
 
     def push(self, chunk: str):
-        if not chunk:
+        if not chunk or self._shutdown.is_set():
+            return
+
+        if self._muted:
             return
 
         self._buf += chunk
@@ -96,6 +105,12 @@ class SileroTTSStreamer:
                 # коротко — копим дальше
                 break
 
+        # если нет точки, но текст уже есть — шлём, чтобы звук начался сразу
+        normalized_tail = " ".join(self._buf.split()).strip()
+        if normalized_tail and len(normalized_tail) >= self.min_chars:
+            self._q.put(normalized_tail)
+            self._buf = ""
+
     def _flush_internal(self, reason="manual"):
         tail = " ".join(self._buf.split()).strip()
         self._buf = ""
@@ -105,9 +120,47 @@ class SileroTTSStreamer:
     def flush(self):
         self._flush_internal(reason="manual")
 
+    def interrupt(self):
+        """Останавливает текущую озвучку и очищает очередь."""
+        try:
+            sd.stop()
+        except Exception:
+            pass
+
+        self._buf = ""
+        while True:
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                break
+            finally:
+                try:
+                    self._q.task_done()
+                except ValueError:
+                    # если join не вызывался, task_done может бросить ошибку
+                    pass
+
+    def mute(self):
+        self._muted = True
+        self.interrupt()
+
+    def unmute(self):
+        self._muted = False
+
     def close(self, wait: bool = True):
+        # close теперь используется как "дождаться окончания" или мгновенно оборвать
+        if wait:
+            self.flush()
+            self._q.join()
+        else:
+            self.interrupt()
+
+    def shutdown(self):
+        self._shutdown.set()
         self._stop.set()
         self.flush()
         self._q.put(None)
-        if wait:
+        try:
             self._q.join()
+        except Exception:
+            pass

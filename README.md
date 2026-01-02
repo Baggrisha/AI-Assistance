@@ -50,6 +50,7 @@
 - 🧠 Выполнение системных команд (open app, system actions и др.)
 - 🔀 Интеллектуальный роутинг интентов (команда / диалог)
 - 🔊 Озвучка ответов
+- 🎙 Голосовой ввод через GigaAM (ASR)
 - 🪟 GUI в стиле Siri / ChatGPT
 - 🧩 Модульная архитектура
 - 🛠 Простая замена модели LLM
@@ -132,7 +133,11 @@ MINI_MODEL="gemma3:4b"
 MAIN_MODEL="gemma3:4b"
 HF_TOKEN=TOKEN
 VOICE_ENABLED="0"
+GIGAAM_TOKEN="PUT_YOUR_TOKEN_HERE"
+GIGAAM_URL="https://gigachat.devices.sberbank.ru/api/v1/speech:recognize"
 ```
+
+Для голосового ввода добавьте персональный токен и (опционально) кастомный endpoint GigaAM. Кнопка записи в интерфейсе автоматически активируется, если токен найден в `.env`.
 
 ---
 
@@ -158,7 +163,7 @@ python main.py
 
 ## 🛣 Планы развития
 
-* [ ] Голосовой ввод
+* [x] Голосовой ввод
 * [ ] Память диалога
 * [ ] Активация по голосу
 
@@ -205,6 +210,7 @@ It combines:
 * 🧠 System command execution
 * 🔀 Intelligent intent routing
 * 🔊 Voice responses
+* 🎙 Voice input powered by GigaAM (ASR)
 * 🪟 Siri / ChatGPT–style GUI
 * 🧩 Modular architecture
 * 🛠 Easy model switching
@@ -234,7 +240,11 @@ MINI_MODEL="gemma3:4b"
 MAIN_MODEL="gemma3:4b"
 HF_TOKEN=TOKEN
 VOICE_ENABLED="0"
+GIGAAM_TOKEN="PUT_YOUR_TOKEN_HERE"
+GIGAAM_URL="https://gigachat.devices.sberbank.ru/api/v1/speech:recognize"
 ```
+
+Add your personal GigaAM token (and optional custom endpoint) to enable the microphone button in the GUI.
 
 ---
 

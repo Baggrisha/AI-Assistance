@@ -5,6 +5,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from gui.styles import VIKA_QSS
 from tools.env_tools import read_env, write_env, get_ollama_models
+from core.voice import VoiceRecorder, GigaAMRecognizer
 
 
 class VoiceOrb(QtWidgets.QWidget):
@@ -224,6 +225,25 @@ class StreamWorker(QtCore.QObject):
                 pass
 
 
+class TranscribeWorker(QtCore.QObject):
+    finished = QtCore.Signal(str)
+    error = QtCore.Signal(str)
+
+    def __init__(self, recognizer: GigaAMRecognizer, audio_bytes: bytes, sample_rate: int):
+        super().__init__()
+        self.recognizer = recognizer
+        self.audio_bytes = audio_bytes
+        self.sample_rate = sample_rate
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            text = self.recognizer.transcribe(self.audio_bytes, self.sample_rate)
+            self.finished.emit(text.strip())
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class SettingsTab(QtWidgets.QWidget):
     def __init__(self, agent, env_path: str = ".env"):
         super().__init__()
@@ -320,10 +340,11 @@ class SettingsTab(QtWidgets.QWidget):
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, agent, env_path: str = ".env"):
+    def __init__(self, agent, env_path: str = ".env", recognizer: GigaAMRecognizer | None = None):
         super().__init__()
         self.agent = agent
         self.env_path = env_path
+        self.recognizer = recognizer
 
         self.setWindowTitle("Асистент Вика")
         self.resize(980, 740)
@@ -393,6 +414,20 @@ class MainWindow(QtWidgets.QMainWindow):
             "QToolButton:hover { background: rgba(255,255,255,0.10); border-radius: 16px; }"
         )
 
+        self.btn_mic = QtWidgets.QToolButton()
+        self.btn_mic.setText("🎙")
+        self.btn_mic.setToolTip("Запись и распознавание через GigaAM")
+        self.btn_mic.setCheckable(True)
+        self.btn_mic.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.btn_mic.setStyleSheet(
+            "QToolButton { background: transparent; border: none; padding: 8px 10px; }"
+            "QToolButton:hover { background: rgba(255,255,255,0.10); border-radius: 16px; }"
+            "QToolButton:checked { background: rgba(10,132,255,0.15); border-radius: 16px; }"
+        )
+        if not self.recognizer:
+            self.btn_mic.setEnabled(False)
+            self.btn_mic.setToolTip("GigaAM не настроен (добавь GIGAAM_TOKEN в .env)")
+
         self.btn_send = QtWidgets.QToolButton()
         self.btn_send.setText("➤")
         self.btn_send.setToolTip("Send")
@@ -404,6 +439,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         pill_l.addWidget(self.input, 1)
         pill_l.addWidget(self.btn_stop)
+        pill_l.addWidget(self.btn_mic)
         pill_l.addWidget(self.btn_send)
 
         chat_l.addLayout(top)
@@ -425,6 +461,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._typing: TypingBubble | None = None
         self._thread: QtCore.QThread | None = None
         self._worker: StreamWorker | None = None
+        self.recorder = VoiceRecorder()
+        self._asr_thread: QtCore.QThread | None = None
+        self._asr_worker: TranscribeWorker | None = None
+        self._recording = False
 
         # bubble sizing (75% of chat viewport)
         self._bubble_width_ratio = 0.75
@@ -433,10 +473,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_send.clicked.connect(self.on_send)
         self.btn_stop.clicked.connect(self.on_stop)
         self.voice_orb.toggled.connect(self.on_voice_toggle)
+        self.btn_mic.toggled.connect(self.on_record_toggle)
         self.input.installEventFilter(self)
 
         # initial tts flag
-        setattr(self.agent, "tts_enabled", voice_enabled)
+        if voice_enabled:
+            self.agent.enable_tts()
+        else:
+            self.agent.disable_tts()
 
         hello = Bubble("Привет. Чем могу помочь?", is_user=False)
         hello.set_max_width(self._bubble_max_width())
@@ -484,11 +528,93 @@ class MainWindow(QtWidgets.QMainWindow):
         return super().eventFilter(obj, event)
 
     def on_voice_toggle(self, enabled: bool):
-        setattr(self.agent, "tts_enabled", enabled)
+        if enabled:
+            self.agent.enable_tts()
+        else:
+            self.agent.disable_tts()
         write_env(self.env_path, {"VOICE_ENABLED": "1" if enabled else "0"})
         self.voice_orb.set_enabled(enabled)
         if not enabled:
             self.voice_orb.set_active(False)
+
+    def on_record_toggle(self, recording: bool):
+        if not self.recognizer:
+            self.status.setText("Голос недоступен")
+            self.btn_mic.setChecked(False)
+            return
+
+        if recording:
+            try:
+                self.recorder.start()
+            except Exception as e:
+                self.status.setText(f"Ошибка микрофона: {e}")
+                self.btn_mic.setChecked(False)
+                return
+            self._recording = True
+            self.status.setText("Recording…")
+            self.btn_send.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+            return
+
+        if not self._recording:
+            return
+
+        self._recording = False
+        try:
+            audio_bytes, sample_rate = self.recorder.stop()
+        except Exception as e:
+            self.status.setText(f"Ошибка записи: {e}")
+            return
+
+        self.status.setText("Transcribing…")
+        self.start_transcription(audio_bytes, sample_rate)
+
+    def start_transcription(self, audio_bytes: bytes, sample_rate: int):
+        if not audio_bytes:
+            self.status.setText("Пустая запись")
+            self.btn_mic.setChecked(False)
+            self.btn_send.setEnabled(True)
+            return
+
+        if self._asr_thread:
+            self._asr_thread.quit()
+            self._asr_thread.wait()
+
+        self._asr_thread = QtCore.QThread(self)
+        self._asr_worker = TranscribeWorker(self.recognizer, audio_bytes, sample_rate)
+        self._asr_worker.moveToThread(self._asr_thread)
+
+        self._asr_thread.started.connect(self._asr_worker.run)
+        self._asr_worker.finished.connect(self.on_transcribe_ready)
+        self._asr_worker.error.connect(self.on_transcribe_error)
+        self._asr_worker.finished.connect(self._asr_thread.quit)
+        self._asr_worker.error.connect(self._asr_thread.quit)
+        self._asr_worker.finished.connect(self._asr_worker.deleteLater)
+        self._asr_thread.finished.connect(self._asr_thread.deleteLater)
+
+        self._asr_thread.start()
+
+    def on_transcribe_ready(self, text: str):
+        self._asr_thread = None
+        self._asr_worker = None
+        self.btn_mic.setChecked(False)
+        self.status.setText("Ready")
+        self.btn_send.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+
+        if not text:
+            return
+
+        self.input.setText(text)
+        self.on_send()
+
+    def on_transcribe_error(self, msg: str):
+        self._asr_thread = None
+        self._asr_worker = None
+        self.btn_mic.setChecked(False)
+        self.status.setText(f"ASR error: {msg}")
+        self.btn_send.setEnabled(True)
+        self.btn_stop.setEnabled(False)
 
     def on_send(self):
         prompt = self.input.toPlainText().strip()
@@ -578,4 +704,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.voice_orb.set_active(False)
+        if self.btn_mic.isChecked():
+            self.btn_mic.setChecked(False)
 

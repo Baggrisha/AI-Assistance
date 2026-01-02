@@ -1,7 +1,8 @@
 from brain.support_model import MiniCommandModel
-from tools.env_tools import load_settings
+from tools.env_tools import load_settings, read_env
 from brain.client import LLMClient
 from core.agent import Agent
+from core.voice import GigaAMRecognizer
 
 from PySide6.QtWidgets import QApplication
 from gui.gui import MainWindow
@@ -14,9 +15,12 @@ from core.tts import SileroTTSStreamer
 
 if __name__ == "__main__":
     settings = load_settings()
+    env = read_env(".env")
 
     llm_client = LLMClient(model=settings.main_model)
     mini_llm = MiniCommandModel(model=settings.mini_model)
+
+    recognizer = GigaAMRecognizer.from_env(env)
 
     tts = SileroTTSStreamer(
         speaker="kseniya",
@@ -31,6 +35,6 @@ if __name__ == "__main__":
     )
 
     app = QApplication([])                # ✅ правильно
-    window = MainWindow(agent, env_path=".env")
+    window = MainWindow(agent, env_path=".env", recognizer=recognizer)
     window.show()
     app.exec()                            # ✅ правильно
