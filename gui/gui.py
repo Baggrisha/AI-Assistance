@@ -248,10 +248,18 @@ class TranscribeWorker(QtCore.QObject):
 
 
 class SettingsTab(QtWidgets.QWidget):
-    def __init__(self, agent, env_path: str = ".env"):
+    def __init__(
+        self,
+        agent,
+        env_path: str = ".env",
+        hotword_enabled: bool = True,
+        on_hotword_toggle=None,
+        hotword_available: bool = True,
+    ):
         super().__init__()
         self.agent = agent
         self.env_path = env_path
+        self._on_hotword_toggle = on_hotword_toggle
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(18, 18, 18, 18)
@@ -279,6 +287,12 @@ class SettingsTab(QtWidgets.QWidget):
         self.voice_combo = QtWidgets.QComboBox()
         self.voice_combo.addItems(["kseniya", "baya", "xenia", "aidar"])
 
+        # Hotword toggle
+        self.hotword_check = QtWidgets.QCheckBox("Активация по \"привет, вика\"")
+        self.hotword_check.setChecked(hotword_enabled)
+        self.hotword_check.setEnabled(hotword_available)
+        self.hotword_check.setToolTip("Пассивная активация по кодовой фразе")
+
         hint = QtWidgets.QLabel("Модели сохраняются в .env (MAIN_MODEL / MINI_MODEL). После смены моделей лучше перезапуск.")
         hint.setObjectName("Hint")
 
@@ -295,6 +309,9 @@ class SettingsTab(QtWidgets.QWidget):
         grid.addWidget(QtWidgets.QLabel("Voice (Silero)"), 2, 0)
         grid.addWidget(self.voice_combo, 2, 1)
 
+        grid.addWidget(QtWidgets.QLabel("Hotword"), 3, 0)
+        grid.addWidget(self.hotword_check, 3, 1)
+
         outer.addLayout(grid)
         outer.addWidget(self.btn_save)
         outer.addWidget(hint)
@@ -303,6 +320,7 @@ class SettingsTab(QtWidgets.QWidget):
 
         self.btn_save.clicked.connect(self.save_env)
         self.voice_combo.currentTextChanged.connect(self.apply_voice)
+        self.hotword_check.toggled.connect(self._emit_hotword_toggle)
 
         self.load_env()
         self.apply_voice()
@@ -340,6 +358,17 @@ class SettingsTab(QtWidgets.QWidget):
             tts.speaker = self.voice_combo.currentText()
         except Exception:
             pass
+
+    def _emit_hotword_toggle(self, enabled: bool):
+        if callable(self._on_hotword_toggle):
+            self._on_hotword_toggle(enabled)
+
+    def set_hotword_available(self, available: bool):
+        self.hotword_check.setEnabled(bool(available))
+        if not available:
+            self.hotword_check.setToolTip("Горячее слово включится после загрузки ASR")
+        else:
+            self.hotword_check.setToolTip("Пассивная активация по кодовой фразе")
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -398,6 +427,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # load voice enabled from .env
         env = read_env(env_path)
         voice_enabled = (env.get("VOICE_ENABLED", "1") == "1")
+        hotword_enabled = (env.get("HOTWORD_ENABLED", "1") == "1")
 
         self.voice_orb = VoiceOrb(enabled=voice_enabled)
         pill_l.addWidget(self.voice_orb)
@@ -450,10 +480,16 @@ class MainWindow(QtWidgets.QMainWindow):
         chat_l.addWidget(pill)
 
         # --- Settings tab ---
-        settings_tab = SettingsTab(agent, env_path=env_path)
+        self.settings_tab = SettingsTab(
+            agent,
+            env_path=env_path,
+            hotword_enabled=hotword_enabled,
+            on_hotword_toggle=self.on_hotword_toggle,
+            hotword_available=self.recognizer is not None,
+        )
 
         tabs.addTab(chat_tab, "Chat")
-        tabs.addTab(settings_tab, "Settings")
+        tabs.addTab(self.settings_tab, "Settings")
 
         layout = QtWidgets.QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -472,7 +508,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._silence_timer = QtCore.QTimer(self)
         self._silence_timer.setInterval(300)
         self._silence_timer.timeout.connect(self._check_silence)
-        self._hotword_enabled = True
+        self._hotword_enabled = hotword_enabled
         self._hotword_listening = False
         self._hotword_timer = QtCore.QTimer(self)
         self._hotword_timer.setInterval(300)
@@ -481,6 +517,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hotword_worker: TranscribeWorker | None = None
         self._streaming = False
         self._auto_refocus = True
+        self._stream_timeout_ms = 60000  # safety net, чтобы запросы не зависали навсегда
+        self._stream_timeout = QtCore.QTimer(self)
+        self._stream_timeout.setSingleShot(True)
+        self._stream_timeout.timeout.connect(self._on_stream_timeout)
 
         self.focus_shortcuts = [
             QtGui.QShortcut(QtGui.QKeySequence("Meta+Shift+Space"), self),
@@ -526,6 +566,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recognizer = recognizer
         self.btn_mic.setEnabled(True)
         self.btn_mic.setToolTip("Запись и распознавание через Hugging Face (готово)")
+        if hasattr(self, "settings_tab"):
+            self.settings_tab.set_hotword_available(True)
         logger.info("ASR recognizer attached")
         self._start_hotword_listening()
 
@@ -737,6 +779,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._thread.finished.connect(self._thread.deleteLater)
 
         self._thread.start()
+        self._stream_timeout.start(self._stream_timeout_ms)
 
     def _remove_typing(self):
         if self._typing:
@@ -750,10 +793,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._thread and self._thread.isRunning():
             self._thread.requestInterruption()
             self._thread.quit()
-            if not self._thread.wait(wait_ms):
-                # Форсируем завершение, чтобы не зависало UI
-                self._thread.terminate()
-                self._thread.wait(150)
+            self._thread.wait(wait_ms)
+        self._worker = None
+        self._thread = None
 
     def _reset_stream_state(self, status_text: str = "Ready"):
         self._remove_typing()
@@ -764,6 +806,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._streaming = False
         self._worker = None
         self._thread = None
+        self._stream_timeout.stop()
         self._active_bot = None
         if self._auto_refocus:
             try:
@@ -774,6 +817,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_chunk(self, chunk: str):
         if not self._streaming:
             return
+        self._stream_timeout.start(self._stream_timeout_ms)
         # first chunk: swap typing -> bot bubble
         if self._typing:
             self._remove_typing()
@@ -797,6 +841,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._active_bot:
             self._active_bot.append(f"\n\nОшибка: {msg}")
         self._reset_stream_state("Error")
+
+    def _on_stream_timeout(self):
+        logger.warning("Stream timed out, forcing reset")
+        self._stop_stream_thread()
+        self._reset_stream_state("Timeout")
 
     def on_stop(self):
         self._stop_stream_thread()
@@ -939,6 +988,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._flash_mic_indicator()
         command = text[match_pos + match_len :].strip()
+        command = command.lstrip(" .,!?:;-—\"'«»")
         if not command:
             self.status.setText("Слушаю команду после \"Вика\"")
             self._start_hotword_listening()
@@ -954,3 +1004,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hotword_worker = None
         self.status.setText(f"Hotword ASR error: {msg}")
         self._start_hotword_listening()
+
+    def on_hotword_toggle(self, enabled: bool):
+        self._hotword_enabled = bool(enabled)
+        write_env(self.env_path, {"HOTWORD_ENABLED": "1" if enabled else "0"})
+        if enabled:
+            self._start_hotword_listening()
+        else:
+            self._stop_hotword_listening()
