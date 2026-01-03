@@ -1,7 +1,7 @@
-import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 from tools.system import open_app, pause_media, set_volume, change_volume, play_media, next_media, previous_media, \
-    mute_system, get_weather, get_degrees, add_remind, set_timer
+    mute_system, get_weather, get_degrees, add_remind, set_timer, stopwatch, get_local_weather
 
 ACTION_MAP = {
     "open_app": lambda a: open_app(a["name"]),
@@ -15,31 +15,44 @@ ACTION_MAP = {
     "un_mute": lambda a:  mute_system(False),
     "get_date": lambda a:  mute_system(False),
     "get_time": lambda a:  mute_system(False),
-    "get_weather": lambda a:  get_weather(a["city"]),
+    "get_weather": lambda a:  get_weather(a["city"], a["when"]),
+    "get_local_weather": lambda a: get_local_weather(a["when"]),
     "get_degrees": lambda a:  get_degrees(a["city"]),
     "add_remind": lambda a: add_remind(a["title"], a["notes"], a["due_date"]),
     "set_timer": lambda a: set_timer(a["seconds"]),
+    "stopwatch": lambda a: stopwatch(a["cmd"]),
 }
 
 
 def execute_actions(intents):
-    results = []
-
-    for action, args in intents:
+    def _run(action, args):
         handler = ACTION_MAP.get(action)
         if not handler:
-            continue
-        try:
-            value = handler(args)
-            results.append({
-                "action": action,
-                "args": value,
-                "success": True
-            })
-        except Exception as e:
-            results.append({
+            return {
                 "action": action,
                 "args": args,
+                "result": None,
                 "success": False
-            })
-    return results
+            }
+        try:
+            value = handler(args or {})
+            return {
+                "action": action,
+                "args": args,
+                "result": value,
+                "success": True
+            }
+        except Exception as e:
+            return {
+                "action": action,
+                "args": args,
+                "result": str(e),
+                "success": False
+            }
+
+    if len(intents) <= 1:
+        return [_run(action, args) for action, args in intents]
+
+    with ThreadPoolExecutor(max_workers=min(4, len(intents))) as pool:
+        futures = [pool.submit(_run, action, args) for action, args in intents]
+        return [f.result() for f in futures]

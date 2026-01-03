@@ -6,19 +6,24 @@ QAbstractButton:focus { outline: none; border: none; }
 QTextEdit:focus, QLineEdit:focus { outline: none; border: none; }
 
 /* Tabs */
-QTabWidget::pane { border: none; }
+QTabWidget::pane { border: none; border-radius: 16px; }
 QTabBar::tab {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04);
   color: rgba(242,242,247,0.65);
   padding: 10px 12px;
   margin-right: 8px;
+  border-radius: 12px;
 }
-QTabBar::tab:selected { color: rgba(242,242,247,0.92); }
+QTabBar::tab:selected {
+  background: rgba(255, 255, 255, 0.10);
+  color: rgba(242,242,247,0.92);
+}
+QTabBar::tab:hover { background: rgba(255, 255, 255, 0.07); }
 
 /* Scroll */
 QScrollArea { border: none; background: transparent; }
-QScrollBar:vertical { background: transparent; width: 10px; margin: 10px 2px 10px 2px; }
-QScrollBar::handle:vertical { background: rgba(255, 255, 255, 0.18); border-radius: 5px; min-height: 30px; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 10px 2px 10px 2px; border-radius: 6px; }
+QScrollBar::handle:vertical { background: rgba(255, 255, 255, 0.18); border-radius: 6px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 
 /* Bubbles — БЕЗ ОБВОДКИ */
@@ -32,7 +37,13 @@ QFrame#BotBubble {
   border: none;
   border-radius: 18px;
 }
-QLabel#BubbleText { background: transparent; border: none; }
+QLabel#BubbleText {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  line-height: 1.32em;
+  qproperty-wordWrap: true;
+}
 
 /* Main glass panel */
 QFrame#Glass {

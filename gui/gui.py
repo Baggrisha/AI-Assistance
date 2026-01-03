@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import math
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from gui.styles import MASHA_QSS
 from tools.env_tools import read_env, write_env, get_ollama_models
+from core.voice import VoiceRecorder, HFWhisperRecognizer
+
+logger = logging.getLogger(__name__)
 
 
 class VoiceOrb(QtWidgets.QWidget):
@@ -138,8 +142,8 @@ class Bubble(QtWidgets.QFrame):
         lay.addWidget(self.label)
 
     def set_max_width(self, w: int):
-        # Внятные границы, чтобы не разваливалось на очень узком окне
-        self.setMaximumWidth(max(320, int(w)))
+        # Даем пузырям ширину ближе к макс. доступной, чтобы текст не ломался каждую строку
+        self.setMaximumWidth(max(360, int(w * 0.95)))
 
     def append(self, chunk: str):
         self.label.setText(self.label.text() + chunk)
@@ -222,6 +226,25 @@ class StreamWorker(QtCore.QObject):
                 tts.close(wait=False)
             except Exception:
                 pass
+
+
+class TranscribeWorker(QtCore.QObject):
+    finished = QtCore.Signal(str)
+    error = QtCore.Signal(str)
+
+    def __init__(self, recognizer: HFWhisperRecognizer, audio_bytes: bytes, sample_rate: int):
+        super().__init__()
+        self.recognizer = recognizer
+        self.audio_bytes = audio_bytes
+        self.sample_rate = sample_rate
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            text = self.recognizer.transcribe(self.audio_bytes, self.sample_rate)
+            self.finished.emit(text.strip())
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class SettingsTab(QtWidgets.QWidget):
@@ -320,10 +343,11 @@ class SettingsTab(QtWidgets.QWidget):
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, agent, env_path: str = ".env"):
+    def __init__(self, agent, env_path: str = ".env", recognizer: HFWhisperRecognizer | None = None):
         super().__init__()
         self.agent = agent
         self.env_path = env_path
+        self.recognizer = recognizer
 
         self.setWindowTitle("Асистент Маша")
         self.resize(980, 740)
@@ -393,6 +417,20 @@ class MainWindow(QtWidgets.QMainWindow):
             "QToolButton:hover { background: rgba(255,255,255,0.10); border-radius: 16px; }"
         )
 
+        self.btn_mic = QtWidgets.QToolButton()
+        self.btn_mic.setText("🎙")
+        self.btn_mic.setToolTip("Запись и распознавание через Hugging Face (ai-sage/GigaAM-v3)")
+        self.btn_mic.setCheckable(True)
+        self.btn_mic.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.btn_mic.setStyleSheet(
+            "QToolButton { background: transparent; border: none; padding: 8px 10px; }"
+            "QToolButton:hover { background: rgba(255,255,255,0.10); border-radius: 16px; }"
+            "QToolButton:checked { background: rgba(10,132,255,0.15); border-radius: 16px; }"
+        )
+        if not self.recognizer:
+            self.btn_mic.setEnabled(False)
+            self.btn_mic.setToolTip("ASR не настроен (проверь HF_ASR_MODEL в .env)")
+
         self.btn_send = QtWidgets.QToolButton()
         self.btn_send.setText("➤")
         self.btn_send.setToolTip("Send")
@@ -404,6 +442,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         pill_l.addWidget(self.input, 1)
         pill_l.addWidget(self.btn_stop)
+        pill_l.addWidget(self.btn_mic)
         pill_l.addWidget(self.btn_send)
 
         chat_l.addLayout(top)
@@ -425,18 +464,52 @@ class MainWindow(QtWidgets.QMainWindow):
         self._typing: TypingBubble | None = None
         self._thread: QtCore.QThread | None = None
         self._worker: StreamWorker | None = None
+        self.recorder = VoiceRecorder()
+        self.hotword_recorder = VoiceRecorder()
+        self._asr_thread: QtCore.QThread | None = None
+        self._asr_worker: TranscribeWorker | None = None
+        self._recording = False
+        self._silence_timer = QtCore.QTimer(self)
+        self._silence_timer.setInterval(300)
+        self._silence_timer.timeout.connect(self._check_silence)
+        self._hotword_enabled = True
+        self._hotword_listening = False
+        self._hotword_timer = QtCore.QTimer(self)
+        self._hotword_timer.setInterval(300)
+        self._hotword_timer.timeout.connect(self._check_hotword_silence)
+        self._hotword_thread: QtCore.QThread | None = None
+        self._hotword_worker: TranscribeWorker | None = None
+        self._streaming = False
+        self._auto_refocus = True
+
+        self.focus_shortcuts = [
+            QtGui.QShortcut(QtGui.QKeySequence("Meta+Shift+Space"), self),
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+Space"), self),
+        ]
+        for sc in self.focus_shortcuts:
+            sc.activated.connect(self.bring_to_front)
+
+        app_state = QtWidgets.QApplication.instance()
+        if app_state:
+            app_state.applicationStateChanged.connect(self._on_app_state_changed)
+            app_state.focusChanged.connect(self._on_focus_changed)
 
         # bubble sizing (75% of chat viewport)
-        self._bubble_width_ratio = 0.75
+        # Расширяем пузыри до ~90% доступной ширины, чтобы помещалось больше текста на строку
+        self._bubble_width_ratio = 0.9
 
         # signals
         self.btn_send.clicked.connect(self.on_send)
         self.btn_stop.clicked.connect(self.on_stop)
         self.voice_orb.toggled.connect(self.on_voice_toggle)
+        self.btn_mic.toggled.connect(self.on_record_toggle)
         self.input.installEventFilter(self)
 
         # initial tts flag
-        setattr(self.agent, "tts_enabled", voice_enabled)
+        if voice_enabled:
+            self.agent.enable_tts()
+        else:
+            self.agent.disable_tts()
 
         hello = Bubble("Привет. Чем могу помочь?", is_user=False)
         hello.set_max_width(self._bubble_max_width())
@@ -444,6 +517,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # apply widths after first layout pass
         QtCore.QTimer.singleShot(0, self._apply_bubble_widths)
+
+        # start passive hotword listening
+        self._start_hotword_listening()
+
+    def attach_recognizer(self, recognizer: HFWhisperRecognizer):
+        """Вызывается, когда ASR загрузился в фоне."""
+        self.recognizer = recognizer
+        self.btn_mic.setEnabled(True)
+        self.btn_mic.setToolTip("Запись и распознавание через Hugging Face (готово)")
+        logger.info("ASR recognizer attached")
+        self._start_hotword_listening()
 
     def _bubble_max_width(self) -> int:
         viewport_w = self.chat.viewport().width()
@@ -470,6 +554,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.chat.container.updateGeometry()
 
+    def _flash_mic_indicator(self, duration_ms: int = 1200):
+        if self._recording:
+            return
+        self.btn_mic.blockSignals(True)
+        self.btn_mic.setChecked(True)
+        self.btn_mic.blockSignals(False)
+        QtCore.QTimer.singleShot(duration_ms, self._reset_mic_indicator)
+
+    def _reset_mic_indicator(self):
+        if self._recording:
+            return
+        self.btn_mic.blockSignals(True)
+        self.btn_mic.setChecked(False)
+        self.btn_mic.blockSignals(False)
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._apply_bubble_widths()
@@ -484,16 +583,116 @@ class MainWindow(QtWidgets.QMainWindow):
         return super().eventFilter(obj, event)
 
     def on_voice_toggle(self, enabled: bool):
-        setattr(self.agent, "tts_enabled", enabled)
+        if enabled:
+            self.agent.enable_tts()
+        else:
+            self.agent.disable_tts()
         write_env(self.env_path, {"VOICE_ENABLED": "1" if enabled else "0"})
         self.voice_orb.set_enabled(enabled)
         if not enabled:
             self.voice_orb.set_active(False)
 
+    def on_record_toggle(self, recording: bool):
+        if not self.recognizer:
+            self.status.setText("Голос недоступен")
+            self.btn_mic.setChecked(False)
+            return
+
+        if recording:
+            self._stop_hotword_listening()
+            try:
+                self.recorder.start()
+            except Exception as e:
+                self.status.setText(f"Ошибка микрофона: {e}")
+                self.btn_mic.setChecked(False)
+                return
+            self._recording = True
+            self.status.setText("Recording…")
+            self.btn_send.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+            self.voice_orb.set_active(True)
+            self._silence_timer.start()
+            return
+
+        if not self._recording:
+            return
+
+        self._recording = False
+        self._silence_timer.stop()
+        self.voice_orb.set_active(False)
+        try:
+            audio_bytes, sample_rate = self.recorder.stop()
+        except Exception as e:
+            self.status.setText(f"Ошибка записи: {e}")
+            return
+
+        self.status.setText("Transcribing…")
+        self.start_transcription(audio_bytes, sample_rate)
+
+    def start_transcription(self, audio_bytes: bytes, sample_rate: int):
+        if not audio_bytes:
+            self.status.setText("Пустая запись")
+            self.btn_mic.setChecked(False)
+            self.btn_send.setEnabled(True)
+            return
+
+        if self._asr_thread:
+            self._asr_thread.quit()
+            self._asr_thread.wait()
+            self._asr_thread = None
+            self._asr_worker = None
+
+        self._asr_thread = QtCore.QThread(self)
+        self._asr_worker = TranscribeWorker(self.recognizer, audio_bytes, sample_rate)
+        self._asr_worker.moveToThread(self._asr_thread)
+
+        self._asr_thread.started.connect(self._asr_worker.run)
+        self._asr_worker.finished.connect(self.on_transcribe_ready)
+        self._asr_worker.error.connect(self.on_transcribe_error)
+        self._asr_worker.finished.connect(self._asr_thread.quit)
+        self._asr_worker.error.connect(self._asr_thread.quit)
+        self._asr_thread.finished.connect(self._asr_worker.deleteLater)
+        self._asr_thread.finished.connect(self._asr_thread.deleteLater)
+
+        self._asr_thread.start()
+
+    def on_transcribe_ready(self, text: str):
+        self._asr_thread = None
+        self._asr_worker = None
+        self.btn_mic.setChecked(False)
+        self.status.setText("Ready")
+        self.voice_orb.set_active(False)
+        self.btn_send.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+
+        if not text:
+            return
+
+        self.input.setText(text)
+        self.on_send()
+        self._start_hotword_listening()
+
+    def on_transcribe_error(self, msg: str):
+        self._asr_thread = None
+        self._asr_worker = None
+        self.btn_mic.setChecked(False)
+        self.status.setText(f"ASR error: {msg}")
+        logger.error("ASR error: %s", msg)
+        self.voice_orb.set_active(False)
+        self.btn_send.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._start_hotword_listening()
+
     def on_send(self):
+        if self._streaming:
+            # Отменяем предыдущий ответ, чтобы не держать параллельные запросы
+            self._stop_stream_thread()
+            self._reset_stream_state("Stopped")
+
         prompt = self.input.toPlainText().strip()
         if not prompt:
             return
+        logger.info("User prompt queued: %s", prompt[:200])
 
         user_b = Bubble(prompt, is_user=True)
         user_b.set_max_width(self._bubble_max_width())
@@ -516,6 +715,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.setText("Thinking…")
         self.btn_send.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        self._streaming = True
 
         # orb pulse while "working"
         if self.voice_orb.enabled:
@@ -531,7 +731,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker.error.connect(self.on_error)
 
         self._worker.done.connect(self._thread.quit)
+        self._worker.error.connect(self._thread.quit)
         self._worker.done.connect(self._worker.deleteLater)
+        self._worker.error.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
 
         self._thread.start()
@@ -542,7 +744,36 @@ class MainWindow(QtWidgets.QMainWindow):
             self._typing.deleteLater()
             self._typing = None
 
+    def _stop_stream_thread(self, wait_ms: int = 350):
+        if self._worker:
+            self._worker.stop()
+        if self._thread and self._thread.isRunning():
+            self._thread.requestInterruption()
+            self._thread.quit()
+            if not self._thread.wait(wait_ms):
+                # Форсируем завершение, чтобы не зависало UI
+                self._thread.terminate()
+                self._thread.wait(150)
+
+    def _reset_stream_state(self, status_text: str = "Ready"):
+        self._remove_typing()
+        self.status.setText(status_text)
+        self.btn_send.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.voice_orb.set_active(False)
+        self._streaming = False
+        self._worker = None
+        self._thread = None
+        self._active_bot = None
+        if self._auto_refocus:
+            try:
+                self.bring_to_front()
+            except Exception as e:
+                logger.warning("bring_to_front failed: %s", e)
+
     def on_chunk(self, chunk: str):
+        if not self._streaming:
+            return
         # first chunk: swap typing -> bot bubble
         if self._typing:
             self._remove_typing()
@@ -555,27 +786,171 @@ class MainWindow(QtWidgets.QMainWindow):
             self.chat.scroll_to_bottom()
 
     def on_done(self):
-        self._remove_typing()
-        self.status.setText("Ready")
-        self.btn_send.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.voice_orb.set_active(False)
+        if not self._streaming:
+            return
+        self._reset_stream_state("Ready")
 
     def on_error(self, msg: str):
-        self._remove_typing()
-        self.status.setText("Error")
-        self.btn_send.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.voice_orb.set_active(False)
+        if not self._streaming:
+            return
+        logger.error("Stream worker error: %s", msg)
         if self._active_bot:
             self._active_bot.append(f"\n\nОшибка: {msg}")
+        self._reset_stream_state("Error")
 
     def on_stop(self):
-        if self._worker:
-            self._worker.stop()
-        self._remove_typing()
-        self.status.setText("Stopped")
-        self.btn_send.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.voice_orb.set_active(False)
+        self._stop_stream_thread()
+        self._reset_stream_state("Stopped")
+        if self.btn_mic.isChecked():
+            self.btn_mic.setChecked(False)
 
+    def _check_silence(self):
+        if not self._recording:
+            self._silence_timer.stop()
+            return
+
+        if self.recorder.silence_for() >= 1.5:
+            self.status.setText("Auto stop: silence")
+            self.btn_mic.setChecked(False)
+
+    # --- Passive hotword listening (always-on "Маша") ---
+    def _start_hotword_listening(self):
+        if not self._hotword_enabled or self._hotword_listening:
+            return
+        if self._recording:
+            return
+        if not self.recognizer:
+            return
+        if self._hotword_thread:
+            return
+        try:
+            self.hotword_recorder.start()
+            self._hotword_listening = True
+            self._hotword_timer.start()
+        except Exception as e:
+            self.status.setText(f"Hotword mic error: {e}")
+            self._hotword_listening = False
+
+    def _stop_hotword_listening(self):
+        if not self._hotword_listening:
+            return
+        self._hotword_timer.stop()
+        try:
+            self.hotword_recorder.stop()
+        except Exception:
+            pass
+        self._hotword_listening = False
+
+    def _check_hotword_silence(self):
+        if not self._hotword_listening:
+            self._hotword_timer.stop()
+            return
+        if self._recording:
+            return
+        if self._hotword_thread:
+            return
+        # если тишина, завершаем сегмент и пробуем распознать активационное слово
+        if self.hotword_recorder.silence_for() >= 1.5:
+            try:
+                audio_bytes, sample_rate = self.hotword_recorder.stop()
+            except Exception as e:
+                self.status.setText(f"Hotword stop error: {e}")
+                self._hotword_listening = False
+                self._hotword_timer.stop()
+                self._start_hotword_listening()
+                return
+            self._hotword_listening = False
+            self._hotword_timer.stop()
+            if audio_bytes:
+                self._start_hotword_asr(audio_bytes, sample_rate)
+            else:
+                self._start_hotword_listening()
+
+    def bring_to_front(self):
+        """Пытаемся вернуть окно на передний план, если система разрешает."""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.setWindowState(self.windowState() & ~QtCore.Qt.WindowMinimized)
+        self.window().setWindowFlag(QtCore.Qt.Window, True)
+        self.window().show()
+        self.window().raise_()
+        self.window().activateWindow()
+        try:
+            handle = self.window().windowHandle()
+            if handle:
+                QtGui.QGuiApplication.setActiveWindow(handle)
+        except Exception:
+            pass
+        try:
+            self.setFocus(QtCore.Qt.ActiveWindowFocusReason)
+        except Exception:
+            pass
+        logger.info("Requested bring_to_front")
+
+    def _on_app_state_changed(self, state):
+        logger.info("App state changed: %s", state)
+
+    def _on_focus_changed(self, old, new):
+        logger.info("Focus changed: %s -> %s", old, new)
+
+    def _start_hotword_asr(self, audio_bytes: bytes, sample_rate: int):
+        if not self.recognizer:
+            self._start_hotword_listening()
+            return
+        if self._hotword_thread:
+            return
+
+        self._hotword_thread = QtCore.QThread(self)
+        self._hotword_worker = TranscribeWorker(self.recognizer, audio_bytes, sample_rate)
+        self._hotword_worker.moveToThread(self._hotword_thread)
+
+        self._hotword_thread.started.connect(self._hotword_worker.run)
+        self._hotword_worker.finished.connect(self._on_hotword_ready)
+        self._hotword_worker.error.connect(self._on_hotword_error)
+        self._hotword_worker.finished.connect(self._hotword_thread.quit)
+        self._hotword_worker.error.connect(self._hotword_thread.quit)
+        self._hotword_thread.finished.connect(self._hotword_worker.deleteLater)
+        self._hotword_thread.finished.connect(self._hotword_thread.deleteLater)
+
+        self._hotword_thread.start()
+
+    def _on_hotword_ready(self, text: str):
+        self._hotword_thread = None
+        self._hotword_worker = None
+        if not text:
+            self._start_hotword_listening()
+            return
+
+        lowered = text.lower()
+        wake_variants = ("привет маша", "маша")
+        match_pos = None
+        match_len = None
+        for w in wake_variants:
+            idx = lowered.find(w)
+            if idx != -1 and (match_pos is None or idx < match_pos):
+                match_pos = idx
+                match_len = len(w)
+
+        if match_pos is None:
+            # no wake word, just resume listening
+            self._start_hotword_listening()
+            return
+
+        self._flash_mic_indicator()
+        command = text[match_pos + match_len :].strip()
+        if not command:
+            self.status.setText("Слушаю команду после \"Маша\"")
+            self._start_hotword_listening()
+            return
+
+        self._flash_mic_indicator()
+        self.input.setText(command)
+        self.on_send()
+        self._start_hotword_listening()
+
+    def _on_hotword_error(self, msg: str):
+        self._hotword_thread = None
+        self._hotword_worker = None
+        self.status.setText(f"Hotword ASR error: {msg}")
+        self._start_hotword_listening()
