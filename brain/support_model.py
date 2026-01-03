@@ -1,4 +1,4 @@
-import re
+import json
 import ollama
 
 from tools.promt import SYSTEM_PROMPT_SUPPORT as SYSTEM_PROMPT
@@ -9,27 +9,41 @@ class MiniCommandModel:
         self.model = model
 
     def generate(self, user_text: str) -> str:
-        prompt = f"{SYSTEM_PROMPT}\nПользователь: {user_text}\nJSON:"
+        prompt = f"{SYSTEM_PROMPT}\nЗапрос: {user_text}\nОтвет:"
 
         try:
             response = ollama.generate(
                 model=self.model,
                 prompt=prompt,
                 options={
-                    "temperature": 0.3,
-                    "top_p": 0.9,
-                    "num_predict": 200,
+                    "temperature": 0.0,
+                    "top_p": 1.0,
                 }
             )
-            raw = response["response"]
-            raw = re.sub(r"```json|```", "", raw).strip()
+            raw = response["response"].strip()
 
-            match = re.search(r"\[\s*\{.*?\}\s*\]", raw, re.DOTALL)
-            if match:
-                return match.group(0)
-
-            return "[]"
+            if "]" in raw:
+                raw = raw[: raw.rfind("]") + 1].strip()
+            return raw
 
         except Exception as e:
             print("[MiniCommandModel] Ollama error:", e)
             return "[]"
+
+    def warmup(self):
+        """
+        Прогрев мини-модели, чтобы избежать задержки на первом запросе.
+        """
+        try:
+            ollama.generate(
+                model=self.model,
+                prompt=f"{SYSTEM_PROMPT}\nЗапрос: ping\nОтвет:",
+                stream=False,
+                options={
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                    "num_predict": 8,
+                },
+            )
+        except Exception as e:
+            print("[MiniCommandModel] Warmup error:", e)

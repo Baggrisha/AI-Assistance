@@ -36,11 +36,28 @@ class ResourceLoader(QtCore.QObject):
             self.error.emit(f"ASR load failed: {e}")
 
         try:
+            self._warmup_llms()
             self.warmup_done.emit()
         except Exception as e:
-            self.error.emit(f"LLM warmup failed: {e}")
+            self.error.emit(f"Ollama warmup failed: {e}")
         finally:
             self.finished.emit()
+
+    def _warmup_llms(self):
+        warmed = False
+
+        llm = getattr(self.agent, "llm", None)
+        if llm and hasattr(llm, "warmup"):
+            llm.warmup()
+            warmed = True
+
+        mini = getattr(self.agent, "mini_model", None)
+        if mini and hasattr(mini, "warmup"):
+            mini.warmup()
+            warmed = True
+
+        if not warmed:
+            self.logger.info("No LLM warmup available")
 
 
 if __name__ == "__main__":
