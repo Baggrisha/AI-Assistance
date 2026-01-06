@@ -1,7 +1,25 @@
 from concurrent.futures import ThreadPoolExecutor
 
-from tools.system import open_app, pause_media, set_volume, change_volume, play_media, next_media, previous_media, \
-    mute_system, get_weather, get_degrees, add_remind, set_timer, stopwatch, get_local_weather
+from tools.system import (
+    add_remind,
+    change_volume,
+    get_degrees,
+    get_local_weather,
+    get_mac_state,
+    get_weather,
+    list_running_apps,
+    mac_power,
+    mute_system,
+    next_media,
+    open_app,
+    pause_media,
+    play_media,
+    previous_media,
+    send_message,
+    set_timer,
+    set_volume,
+    stopwatch,
+)
 
 ACTION_MAP = {
     "open_app": lambda a: open_app(a["name"]),
@@ -21,6 +39,10 @@ ACTION_MAP = {
     "add_remind": lambda a: add_remind(a["title"], a["notes"], a["due_date"]),
     "set_timer": lambda a: set_timer(a["seconds"]),
     "stopwatch": lambda a: stopwatch(a["cmd"]),
+    "send_message": lambda a: send_message(a["platform"], a["to"], a["text"]),
+    "get_mac_state": lambda a: get_mac_state(a.get("section", "all")),
+    "list_running_apps": lambda a: list_running_apps(a.get("app_name")),
+    "mac_power": lambda a: mac_power(a["action"]),
 }
 
 
