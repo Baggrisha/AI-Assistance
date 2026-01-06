@@ -1,11 +1,253 @@
+import base64
 import json
 import re
 import shutil
 import subprocess
 import time
+from typing import Any, Literal
 
 import requests
 
+
+Section = Literal["all", "cpu", "memory", "disk", "battery", "wifi", "gpu", "hardware"]
+
+
+def _run(cmd: list[str]) -> str:
+    return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
+
+
+def _osascript(script: str) -> str:
+    return _run(["osascript", "-e", script])
+
+
+def _do_shell(cmd: str) -> str:
+    cmd_escaped = cmd.replace("\\", "\\\\").replace('"', '\\"')
+    return _osascript(f'do shell script "{cmd_escaped}"')
+
+
+def _safe_int(x: str) -> int | None:
+    try:
+        return int(x)
+    except Exception:
+        return None
+
+
+def _safe_float(x: str) -> float | None:
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
+
+def _cpu_state() -> dict[str, Any]:
+    line = _do_shell(r"top -l 1 -n 0 | awk -F': ' '/^CPU usage/ {print $2}'")
+    m_user = re.search(r"([\d.]+)%\s*user", line)
+    m_sys = re.search(r"([\d.]+)%\s*sys", line)
+    m_idle = re.search(r"([\d.]+)%\s*idle", line)
+    user = _safe_float(m_user.group(1)) if m_user else None
+    sys = _safe_float(m_sys.group(1)) if m_sys else None
+    idle = _safe_float(m_idle.group(1)) if m_idle else None
+    busy = (100.0 - idle) if idle is not None else None
+    return {
+        "raw": line,
+        "user_pct": user,
+        "sys_pct": sys,
+        "idle_pct": idle,
+        "busy_pct": busy,
+    }
+
+
+def _memory_state() -> dict[str, Any]:
+    vm = _do_shell("vm_stat")
+    page_size_match = re.search(r"page size of (\d+) bytes", vm)
+    page_size = _safe_int(page_size_match.group(1)) if page_size_match else 4096
+
+    def pages(name: str) -> int | None:
+        m = re.search(rf"^{re.escape(name)}:\s+(\d+)\.", vm, re.MULTILINE)
+        return _safe_int(m.group(1)) if m else None
+
+    free = pages("Pages free")
+    active = pages("Pages active")
+    inactive = pages("Pages inactive")
+    speculative = pages("Pages speculative")
+    wired = pages("Pages wired down")
+    compressed = pages("Pages occupied by compressor")
+
+    freeish_pages = (free or 0) + (speculative or 0)
+    usedish_pages = (active or 0) + (inactive or 0) + (wired or 0) + (compressed or 0)
+
+    return {
+        "page_size_bytes": page_size,
+        "pages": {
+            "free": free,
+            "active": active,
+            "inactive": inactive,
+            "speculative": speculative,
+            "wired": wired,
+            "compressed": compressed,
+        },
+        "approx": {
+            "free_bytes": freeish_pages * page_size if page_size else None,
+            "used_bytes": usedish_pages * page_size if page_size else None,
+        },
+        "raw": vm,
+    }
+
+
+def _disk_state() -> dict[str, Any]:
+    line = _do_shell("df -H / | tail -1")
+    parts = line.split()
+    out: dict[str, Any] = {"raw": line}
+    if len(parts) >= 6:
+        out.update({
+            "filesystem": parts[0],
+            "size": parts[1],
+            "used": parts[2],
+            "avail": parts[3],
+            "capacity": parts[4],
+            "mounted_on": parts[-1],
+        })
+    return out
+
+
+def _battery_state() -> dict[str, Any]:
+    raw = _do_shell("pmset -g batt")
+    pct_match = re.search(r"(\d+)%", raw)
+    pct = _safe_int(pct_match.group(1)) if pct_match else None
+    power_source = _do_shell(r"pmset -g ps | head -n 1 | sed 's/.*\"\(.*\)\".*/\1/'")
+    return {
+        "percent": pct,
+        "power_source": power_source,
+        "raw": raw,
+    }
+
+
+def _wifi_state() -> dict[str, Any]:
+    iface = _do_shell(r"route get default 2>/dev/null | awk '/interface:/{print $2}' | head -n 1")
+    ssid = _do_shell(r"networksetup -getairportnetwork en0 2>/dev/null | sed 's/Current Wi-Fi Network: //'")
+    airport = _do_shell(r"/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null")
+
+    def _grep_num(key: str) -> int | None:
+        m = re.search(rf"^{key}:\s*(-?\d+)", airport, re.MULTILINE)
+        return _safe_int(m.group(1)) if m else None
+
+    def _grep_float(key: str) -> float | None:
+        m = re.search(rf"^{key}:\s*([\d.]+)", airport, re.MULTILINE)
+        return _safe_float(m.group(1)) if m else None
+
+    state_match = re.search(r"^state:\s*(\w+)", airport, re.MULTILINE)
+    state = state_match.group(1) if state_match else None
+
+    return {
+        "default_interface": iface or None,
+        "ssid": ssid if ssid and "You are not" not in ssid else None,
+        "state": state,
+        "rssi_dbm": _grep_num("agrCtlRSSI"),
+        "noise_dbm": _grep_num("agrCtlNoise"),
+        "tx_rate_mbps": _grep_float("lastTxRate"),
+        "raw_airport": airport,
+    }
+
+
+def _gpu_state() -> dict[str, Any]:
+    sp = _do_shell("system_profiler SPDisplaysDataType 2>/dev/null")
+    chipset_models = re.findall(r"Chipset Model:\s*(.+)", sp)
+    vram = re.findall(r"VRAM.*?:\s*(.+)", sp)
+    return {
+        "chipset_models": chipset_models,
+        "vram": vram,
+        "raw": sp,
+        "utilization_pct": None,
+        "note": "GPU utilization is not reliably exposed without privileged tooling (e.g., powermetrics with sudo) and varies by macOS/hardware.",
+    }
+
+
+def _hardware_state() -> dict[str, Any]:
+    sp = _do_shell("system_profiler SPHardwareDataType 2>/dev/null")
+
+    def find(label: str) -> str | None:
+        m = re.search(rf"^{re.escape(label)}:\s*(.+)$", sp, re.MULTILINE)
+        return m.group(1).strip() if m else None
+
+    return {
+        "model_name": find("Model Name"),
+        "model_identifier": find("Model Identifier"),
+        "chip": find("Chip") or find("Processor Name"),
+        "cores": find("Total Number of Cores") or find("Number of Processors"),
+        "memory": find("Memory"),
+        "raw": sp,
+    }
+
+
+def get_mac_state(section: Section = "all") -> dict[str, Any]:
+    if section == "all":
+        return {
+            "cpu": _cpu_state(),
+            "memory": _memory_state(),
+            "disk": _disk_state(),
+            "battery": _battery_state(),
+            "wifi": _wifi_state(),
+            "gpu": _gpu_state(),
+            "hardware": _hardware_state(),
+        }
+
+    if section == "cpu":
+        return _cpu_state()
+    if section == "memory":
+        return _memory_state()
+    if section == "disk":
+        return _disk_state()
+    if section == "battery":
+        return _battery_state()
+    if section == "wifi":
+        return _wifi_state()
+    if section == "gpu":
+        return _gpu_state()
+    if section == "hardware":
+        return _hardware_state()
+
+    raise ValueError(f"Unknown section: {section}")
+
+
+def list_running_apps(app_name: str | None = None) -> dict[str, Any]:
+    script = r'''
+tell application "System Events"
+    set appList to name of every application process whose background only is false
+end tell
+return appList as string
+'''
+    raw = _osascript(script)
+    apps = [a.strip() for a in raw.split(",") if a.strip()]
+
+    if app_name is None:
+        return {"apps": apps}
+
+    q = app_name.strip().lower()
+    exact = any(a.lower() == q for a in apps)
+    contains = any(q in a.lower() for a in apps)
+    running = exact or contains
+
+    return {
+        "query": app_name,
+        "running": running,
+        "match_type": "exact" if exact else ("contains" if contains else None),
+        "apps": apps,
+    }
+
+
+def mac_power(action: Literal["shutdown", "restart", "sleep", "hibernate"]) -> None:
+    if action in ("shutdown", "restart", "sleep"):
+        verb = {"shutdown": "shut down", "restart": "restart", "sleep": "sleep"}[action]
+        _osascript(f'tell application "System Events" to {verb}')
+        return
+
+    if action == "hibernate":
+        cmd = "sudo pmset -a hibernatemode 25 && sudo pmset sleepnow"
+        subprocess.run(cmd, shell=True, check=True, text=True)
+        return
+
+    raise ValueError(f"Unknown power action: {action}")
 
 
 def open_app(name: str):
@@ -220,3 +462,22 @@ def stopwatch(cmd: str):
         text=True,
         check=True
     )
+
+
+def send_message(platform: str == "Telegram", to: str, text: str):
+    script = f'''
+    tell application "{platform}" to activate
+    delay 0.5
+    tell application "System Events" 
+        keystroke "f" using command down 
+        delay 0.2
+        keystroke "{to}"
+        delay 0.5
+        keystroke return
+        delay 0.5
+        keystroke "{text}"
+        keystroke return
+    end tell
+    '''
+    s = subprocess.run(["osascript", "-e", script])
+    print(s)
