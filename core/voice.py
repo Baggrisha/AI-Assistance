@@ -18,11 +18,11 @@ class VoiceRecorder:
     """Простой рекордер через sounddevice, возвращает WAV-байты."""
 
     def __init__(
-        self,
-        sample_rate: int = 16000,
-        channels: int = 1,
-        dtype: str = "int16",
-        silence_threshold: int = 800,  # int16 амплитуда для детекции речи
+            self,
+            sample_rate: int = 16000,
+            channels: int = 1,
+            dtype: str = "int16",
+            silence_threshold: int = 800,
     ):
         self.sample_rate = sample_rate
         self.channels = channels
@@ -69,14 +69,13 @@ class VoiceRecorder:
         buff = io.BytesIO()
         with wave.open(buff, "wb") as wf:
             wf.setnchannels(self.channels)
-            wf.setsampwidth(2)  # int16
+            wf.setsampwidth(2)
             wf.setframerate(self.sample_rate)
             wf.writeframes(data.tobytes())
 
         return buff.getvalue(), self.sample_rate
 
     def silence_for(self) -> float:
-        """Сколько секунд не было звука выше порога."""
         return max(0.0, time.time() - self._last_sound_ts)
 
 
@@ -84,10 +83,10 @@ class HFWhisperRecognizer:
     """ASR через Hugging Face pipeline (модели Hugging Face)."""
 
     def __init__(
-        self,
-        model_id: str = "ai-sage/GigaAM-v3",
-        device: str = "cpu",
-        language: str = "ru",
+            self,
+            model_id: str = "ai-sage/GigaAM-v3",
+            device: str = "cpu",
+            language: str = "ru",
     ):
         self.model_id = model_id
         self.device = device
@@ -167,7 +166,8 @@ class HFWhisperRecognizer:
                 except FileNotFoundError:
                     pass
 
-        audio = {"array": np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0, "sampling_rate": sample_rate}
+        audio = {"array": np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0,
+                 "sampling_rate": sample_rate}
         result = self.pipe(audio, generate_kwargs={"language": self.language})
         text = result.get("text") if isinstance(result, dict) else None
         return text.strip() if text else ""

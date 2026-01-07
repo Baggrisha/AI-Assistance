@@ -91,12 +91,15 @@ main.py
 
 ## ⚙️ Установка
 
-1) Клонировать репозиторий  
+1) Клонировать репозиторий
+
 ```bash
 git clone https://github.com/Baggrisha/AI-Assistance.git
 cd AI-Assistance
 ```
-2) Установить зависимости  
+
+2) Установить зависимости
+
 ```bash
 pip install -r requirements.txt
 brew install ollama
@@ -107,11 +110,14 @@ ollama pull gemma3:4b
 
 ## 🔑 Настройка окружения
 
-1) Создайте `.env` на основе примера  
+1) Создайте `.env` на основе примера
+
 ```bash
 cp .env.example .env
 ```
-2) Заполните основные переменные  
+
+2) Заполните основные переменные
+
 ```env
 MINI_MODEL="gemma3:4b"
 MAIN_MODEL="gemma3:4b"
@@ -120,17 +126,18 @@ VOICE_ENABLED="0"
 HF_ASR_MODEL="ai-sage/GigaAM-v3"
 HF_ASR_DEVICE="cpu"
 ```
-3) HuggingFace токен (обязателен для ASR)  
-   - Создайте токен: https://huggingface.co/settings/tokens (тип Read)  
-   - Примите условия модели: https://huggingface.co/pyannote/segmentation-3.0  
-   - Вставьте токен (начинается с `hf_`) в `HF_TOKEN`
-4) ASR и микрофон  
-   - Укажите `HF_ASR_MODEL` (по умолчанию `ai-sage/GigaAM-v3`) и `HF_TOKEN`, если модель приватная.  
-   - Опционально задайте `HF_ASR_DEVICE` (`cpu`/`cuda`).
-5) Ярлыки Shortcuts для таймера, секундомера и погоды (установите и выдайте все разрешения):  
-   - Python Timer: https://www.icloud.com/shortcuts/dbf0c70ef9e942cb9ede0a7119409874  
-   - Python Stopwatch: https://www.icloud.com/shortcuts/e91cb3e7233e48c5a564109d37cd1603  
-   - Python Get Location: https://www.icloud.com/shortcuts/d726e7816d304742a3baa7f1d5e031fe
+
+3) HuggingFace токен (обязателен для ASR)
+    - Создайте токен: https://huggingface.co/settings/tokens (тип Read)
+    - Примите условия модели: https://huggingface.co/pyannote/segmentation-3.0
+    - Вставьте токен (начинается с `hf_`) в `HF_TOKEN`
+4) ASR и микрофон
+    - Укажите `HF_ASR_MODEL` (по умолчанию `ai-sage/GigaAM-v3`) и `HF_TOKEN`, если модель приватная.
+    - Опционально задайте `HF_ASR_DEVICE` (`cpu`/`cuda`).
+5) Ярлыки Shortcuts для таймера, секундомера и погоды (установите и выдайте все разрешения):
+    - Python Timer: https://www.icloud.com/shortcuts/dbf0c70ef9e942cb9ede0a7119409874
+    - Python Stopwatch: https://www.icloud.com/shortcuts/e91cb3e7233e48c5a564109d37cd1603
+    - Python Get Location: https://www.icloud.com/shortcuts/d726e7816d304742a3baa7f1d5e031fe
 
 ---
 
@@ -214,12 +221,15 @@ It combines:
 
 ## ⚙️ Installation
 
-1) Clone the repo  
+1) Clone the repo
+
 ```bash
 git clone https://github.com/Baggrisha/AI-Assistance.git
 cd AI-Assistance
 ```
-2) Install dependencies  
+
+2) Install dependencies
+
 ```bash
 pip install -r requirements.txt
 brew install ollama
@@ -230,11 +240,14 @@ ollama pull gemma3:4b
 
 ## 🔑 Environment Setup
 
-1) Copy the example env  
+1) Copy the example env
+
 ```bash
 cp .env.example .env
 ```
-2) Fill key variables  
+
+2) Fill key variables
+
 ```env
 MINI_MODEL="gemma3:4b"
 MAIN_MODEL="gemma3:4b"
@@ -243,18 +256,18 @@ VOICE_ENABLED="0"
 HF_ASR_MODEL="ai-sage/GigaAM-v3"
 HF_ASR_DEVICE="cpu"  # or cuda, if available
 ```
-3) HuggingFace token (required for ASR)  
-   - Create a token: https://huggingface.co/settings/tokens (type Read)  
-   - Accept model terms: https://huggingface.co/pyannote/segmentation-3.0  
-   - Paste the token (starts with `hf_`) into `HF_TOKEN`
-4) ASR and mic  
-   - Set `HF_ASR_MODEL` (default `ai-sage/GigaAM-v3`) and `HF_TOKEN` if the model is private.  
-   - Optionally set `HF_ASR_DEVICE` (`cpu`/`cuda`).
-5) Shortcuts for timer, stopwatch, and local weather — install and grant all permissions:  
-   - Python Timer: https://www.icloud.com/shortcuts/dbf0c70ef9e942cb9ede0a7119409874  
-   - Python Stopwatch: https://www.icloud.com/shortcuts/e91cb3e7233e48c5a564109d37cd1603  
-   - Python Get Location: https://www.icloud.com/shortcuts/d726e7816d304742a3baa7f1d5e031fe
 
+3) HuggingFace token (required for ASR)
+    - Create a token: https://huggingface.co/settings/tokens (type Read)
+    - Accept model terms: https://huggingface.co/pyannote/segmentation-3.0
+    - Paste the token (starts with `hf_`) into `HF_TOKEN`
+4) ASR and mic
+    - Set `HF_ASR_MODEL` (default `ai-sage/GigaAM-v3`) and `HF_TOKEN` if the model is private.
+    - Optionally set `HF_ASR_DEVICE` (`cpu`/`cuda`).
+5) Shortcuts for timer, stopwatch, and local weather — install and grant all permissions:
+    - Python Timer: https://www.icloud.com/shortcuts/dbf0c70ef9e942cb9ede0a7119409874
+    - Python Stopwatch: https://www.icloud.com/shortcuts/e91cb3e7233e48c5a564109d37cd1603
+    - Python Get Location: https://www.icloud.com/shortcuts/d726e7816d304742a3baa7f1d5e031fe
 
 ---
 
@@ -279,6 +292,7 @@ python main.py
 ---
 
 ## 🛣 Development Plans
+
 * [x] Voice
 * [x] Memory of Dialogue
 * [x] Voice Activation

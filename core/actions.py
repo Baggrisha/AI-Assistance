@@ -18,7 +18,7 @@ from tools.system import (
     send_message,
     set_timer,
     set_volume,
-    stopwatch,
+    stopwatch, get_events,
 )
 
 ACTION_MAP = {
@@ -30,12 +30,12 @@ ACTION_MAP = {
     "set_volume": lambda a: set_volume(a["level"]),
     "change_volume": lambda a: change_volume(a["delta"]),
     "mute": lambda a: mute_system(True),
-    "un_mute": lambda a:  mute_system(False),
-    "get_date": lambda a:  mute_system(False),
-    "get_time": lambda a:  mute_system(False),
-    "get_weather": lambda a:  get_weather(a["city"], a["when"]),
+    "un_mute": lambda a: mute_system(False),
+    "get_date": lambda a: mute_system(False),
+    "get_time": lambda a: mute_system(False),
+    "get_weather": lambda a: get_weather(a["city"], a["when"]),
     "get_local_weather": lambda a: get_local_weather(a["when"]),
-    "get_degrees": lambda a:  get_degrees(a["city"]),
+    "get_degrees": lambda a: get_degrees(a["city"]),
     "add_remind": lambda a: add_remind(a["title"], a["notes"], a["due_date"]),
     "set_timer": lambda a: set_timer(a["seconds"]),
     "stopwatch": lambda a: stopwatch(a["cmd"]),
@@ -43,6 +43,7 @@ ACTION_MAP = {
     "get_mac_state": lambda a: get_mac_state(a.get("section", "all")),
     "list_running_apps": lambda a: list_running_apps(a.get("app_name")),
     "mac_power": lambda a: mac_power(a["action"]),
+    "get_events": lambda a: get_events(a["day_start"], a["end_date"], a["calendars_allowlist"]),
 }
 
 

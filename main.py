@@ -1,18 +1,22 @@
 import logging
-from pathlib import Path
+import faulthandler
 from datetime import datetime
+from pathlib import Path
 
 from PySide6 import QtCore
 from PySide6.QtWidgets import QApplication
 
-from brain.support_model import MiniCommandModel
-from tools.env_tools import load_settings, read_env
 from brain.client import LLMClient
+from brain.support_model import MiniCommandModel
 from core.agent import Agent
+from core.tts import SileroTTSStreamer
 from core.voice import HFWhisperRecognizer
 from gui.gui import MainWindow
+from tools.env_tools import load_settings, read_env
+from tools.system import open_app, list_running_apps
 
-from core.tts import SileroTTSStreamer
+faulthandler.enable()
+
 
 class ResourceLoader(QtCore.QObject):
     recognizer_ready = QtCore.Signal(object)
@@ -80,22 +84,30 @@ if __name__ == "__main__":
 
     settings = load_settings()
     env = read_env(".env")
+    voice_enabled = (env.get("VOICE_ENABLED", "1") == "1")
 
     llm_client = LLMClient(model=settings.main_model)
     mini_llm = MiniCommandModel(model=settings.mini_model)
 
+
     def _tts_factory():
-        logging.getLogger(__name__).info("Initializing TTS streamer lazily")
+        logging.getLogger(__name__).info("Initializing TTS streamer")
         return SileroTTSStreamer(
             speaker="kseniya",
             debug=True,
             block_output=True,
         )
 
+    if not list_running_apps("Ollama")["running"]:
+        open_app("ollama")
+
+    tts_instance = _tts_factory() if voice_enabled else None
+
     agent = Agent(
         llm=llm_client,
         mini_model=mini_llm,
-        tts=None,
+        tts=tts_instance,
+        tts_factory=_tts_factory,
     )
 
     app = QApplication([])
@@ -114,4 +126,19 @@ if __name__ == "__main__":
     loader.warmup_done.connect(lambda: logging.getLogger(__name__).info("Ollama warmup complete"))
     loader_thread.start()
 
-    app.exec()
+    exit_code = app.exec()
+
+    # Graceful shutdown to avoid Qt/PortAudio crashes on exit
+    try:
+        if loader_thread.isRunning():
+            loader_thread.quit()
+            loader_thread.wait(2000)
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to stop loader thread: %s", e)
+
+    try:
+        active_tts = getattr(agent, "tts", None)
+        if active_tts:
+            active_tts.shutdown()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to shutdown TTS: %s", e)

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
+
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from gui.styles import VIKA_QSS
-from tools.env_tools import read_env, write_env, get_ollama_models
 from core.voice import VoiceRecorder, HFWhisperRecognizer
+from gui.styles import VIKA_QSS
+from tools.env_tools import read_env, write_env
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,7 @@ class VoiceOrb(QtWidgets.QWidget):
             base = QtGui.QColor(242, 242, 247, 70)
             ring = QtGui.QColor(242, 242, 247, 35)
         else:
-            base = QtGui.QColor(10, 132, 255, 190)   # Apple blue
+            base = QtGui.QColor(10, 132, 255, 190)  # Apple blue
             ring = QtGui.QColor(10, 132, 255, 110)
 
         # glow
@@ -123,7 +125,34 @@ class ChatArea(QtWidgets.QScrollArea):
 
     def scroll_to_bottom(self):
         bar = self.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        if not bar:
+            return
+
+        def _scroll():
+            bar.setValue(bar.maximum())
+
+        QtCore.QTimer.singleShot(0, _scroll)
+        QtCore.QTimer.singleShot(15, _scroll)  # второй тик после пересчёта лэйаута
+
+    def clear_messages(self):
+        # удаляем все строки, кроме финального stretch
+        while self.v.count() > 1:
+            item = self.v.takeAt(0)
+            if not item:
+                continue
+            lay = item.layout()
+            if lay:
+                while lay.count():
+                    child = lay.takeAt(0)
+                    w = child.widget()
+                    if w:
+                        w.deleteLater()
+                lay.deleteLater()
+            else:
+                w = item.widget()
+                if w:
+                    w.deleteLater()
+        QtCore.QTimer.singleShot(0, self.scroll_to_bottom)
 
 
 class Bubble(QtWidgets.QFrame):
@@ -135,7 +164,9 @@ class Bubble(QtWidgets.QFrame):
         self.label = QtWidgets.QLabel(text)
         self.label.setObjectName("BubbleText")
         self.label.setWordWrap(True)
-        self.label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.label.setTextFormat(QtCore.Qt.TextFormat.MarkdownText)
+        self.label.setOpenExternalLinks(True)
+        self.label.setTextInteractionFlags(QtCore.Qt.TextBrowserInteraction)
 
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(18, 12, 18, 12)
@@ -151,6 +182,7 @@ class Bubble(QtWidgets.QFrame):
 
 class TypingDots(QtWidgets.QWidget):
     """3 точки как в ChatGPT."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(44, 14)
@@ -180,6 +212,7 @@ class TypingDots(QtWidgets.QWidget):
 
 class TypingBubble(QtWidgets.QFrame):
     """Bubble с тремя точками, визуально идентичный обычному BotBubble."""
+
     def __init__(self):
         super().__init__()
         self.setObjectName("BotBubble")
@@ -206,12 +239,13 @@ class StreamWorker(QtCore.QObject):
         self.agent = agent
         self.prompt = prompt
         self._stop = False
+        self._cancel_event = threading.Event()
 
     @QtCore.Slot()
     def run(self):
         try:
-            for piece in self.agent.handle_stream(self.prompt):
-                if self._stop:
+            for piece in self.agent.handle_stream(self.prompt, cancel_event=self._cancel_event):
+                if self._stop or self._cancel_event.is_set():
                     break
                 self.chunk.emit(piece)
             self.done.emit()
@@ -220,6 +254,11 @@ class StreamWorker(QtCore.QObject):
 
     def stop(self):
         self._stop = True
+        self._cancel_event.set()
+        try:
+            self.agent.cancel_generation()
+        except Exception:
+            pass
         tts = getattr(self.agent, "tts", None)
         if tts:
             try:
@@ -249,12 +288,12 @@ class TranscribeWorker(QtCore.QObject):
 
 class SettingsTab(QtWidgets.QWidget):
     def __init__(
-        self,
-        agent,
-        env_path: str = ".env",
-        hotword_enabled: bool = True,
-        on_hotword_toggle=None,
-        hotword_available: bool = True,
+            self,
+            agent,
+            env_path: str = ".env",
+            hotword_enabled: bool = True,
+            on_hotword_toggle=None,
+            hotword_available: bool = True,
     ):
         super().__init__()
         self.agent = agent
@@ -293,7 +332,8 @@ class SettingsTab(QtWidgets.QWidget):
         self.hotword_check.setEnabled(hotword_available)
         self.hotword_check.setToolTip("Пассивная активация по кодовой фразе")
 
-        hint = QtWidgets.QLabel("Модели сохраняются в .env (MAIN_MODEL / MINI_MODEL). После смены моделей лучше перезапуск.")
+        hint = QtWidgets.QLabel(
+            "Модели сохраняются в .env (MAIN_MODEL / MINI_MODEL). После смены моделей лучше перезапуск.")
         hint.setObjectName("Hint")
 
         grid = QtWidgets.QGridLayout()
@@ -407,6 +447,15 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(self.title)
         top.addStretch(1)
         top.addWidget(self.status)
+        self.btn_reset = QtWidgets.QToolButton()
+        self.btn_reset.setText("Reset")
+        self.btn_reset.setToolTip("Сбросить диалог и контекст")
+        self.btn_reset.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.btn_reset.setStyleSheet(
+            "QToolButton { background: transparent; border: none; padding: 6px 10px; }"
+            "QToolButton:hover { background: rgba(255,255,255,0.10); border-radius: 14px; }"
+        )
+        top.addWidget(self.btn_reset)
 
         glass = QtWidgets.QFrame()
         glass.setObjectName("Glass")
@@ -544,6 +593,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.voice_orb.toggled.connect(self.on_voice_toggle)
         self.btn_mic.toggled.connect(self.on_record_toggle)
         self.input.installEventFilter(self)
+        self.btn_reset.clicked.connect(self.on_reset_dialog)
 
         # initial tts flag
         if voice_enabled:
@@ -551,9 +601,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.agent.disable_tts()
 
-        hello = Bubble("Привет. Чем могу помочь?", is_user=False)
-        hello.set_max_width(self._bubble_max_width())
-        self.chat.add_row(hello, right=False)
+        self._add_greeting()
 
         # apply widths after first layout pass
         QtCore.QTimer.singleShot(0, self._apply_bubble_widths)
@@ -641,6 +689,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         if recording:
+            self._stop_speech_output()
             self._stop_hotword_listening()
             try:
                 self.recorder.start()
@@ -726,14 +775,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._start_hotword_listening()
 
     def on_send(self):
-        if self._streaming:
-            # Отменяем предыдущий ответ, чтобы не держать параллельные запросы
-            self._stop_stream_thread()
-            self._reset_stream_state("Stopped")
-
         prompt = self.input.toPlainText().strip()
         if not prompt:
             return
+        self._stop_speech_output()
         logger.info("User prompt queued: %s", prompt[:200])
 
         user_b = Bubble(prompt, is_user=True)
@@ -852,6 +897,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reset_stream_state("Stopped")
         if self.btn_mic.isChecked():
             self.btn_mic.setChecked(False)
+
+    def _stop_speech_output(self):
+        """Глушим текущую озвучку и стрим, если пользователь начал новый ввод."""
+        try:
+            self.agent.stop_tts()
+        except Exception as e:
+            logger.warning("stop_tts failed: %s", e)
+
+        if self._streaming:
+            self._stop_stream_thread()
+            self._reset_stream_state("Stopped")
+
+    def on_reset_dialog(self):
+        """Полный сброс диалога и контекста."""
+        self._stop_speech_output()
+        try:
+            self.agent.reset_history()
+        except Exception as e:
+            logger.warning("reset_history failed: %s", e)
+        self.input.clear()
+        self.chat.clear_messages()
+        self._active_bot = None
+        self._typing = None
+        self.status.setText("Ready")
+        self._add_greeting()
+        self._apply_bubble_widths()
+
+    def _add_greeting(self):
+        hello = Bubble("Привет. Чем могу помочь?", is_user=False)
+        hello.set_max_width(self._bubble_max_width())
+        self.chat.add_row(hello, right=False)
 
     def _check_silence(self):
         if not self._recording:
@@ -987,7 +1063,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self._flash_mic_indicator()
-        command = text[match_pos + match_len :].strip()
+        command = text[match_pos + match_len:].strip()
         command = command.lstrip(" .,!?:;-—\"'«»")
         if not command:
             self.status.setText("Слушаю команду после \"Вика\"")
@@ -1012,3 +1088,52 @@ class MainWindow(QtWidgets.QMainWindow):
             self._start_hotword_listening()
         else:
             self._stop_hotword_listening()
+
+    def closeEvent(self, event):
+        """Останавливаем фоновые потоки/аудио перед закрытием, чтобы избежать segfault при выходе."""
+        try:
+            self._stop_speech_output()
+        except Exception as e:
+            logger.warning("stop_speech_output failed during close: %s", e)
+
+        try:
+            self._stop_hotword_listening()
+        except Exception as e:
+            logger.warning("hotword stop failed during close: %s", e)
+
+        try:
+            self._silence_timer.stop()
+            self._hotword_timer.stop()
+        except Exception:
+            pass
+
+        try:
+            if self._asr_thread and self._asr_thread.isRunning():
+                self._asr_thread.requestInterruption()
+                self._asr_thread.quit()
+                self._asr_thread.wait(1000)
+        except Exception as e:
+            logger.warning("ASR thread shutdown failed: %s", e)
+
+        try:
+            if self._hotword_thread and self._hotword_thread.isRunning():
+                self._hotword_thread.requestInterruption()
+                self._hotword_thread.quit()
+                self._hotword_thread.wait(1000)
+        except Exception as e:
+            logger.warning("Hotword thread shutdown failed: %s", e)
+
+        for rec in (getattr(self, "recorder", None), getattr(self, "hotword_recorder", None)):
+            try:
+                if rec:
+                    rec.stop()
+            except Exception:
+                pass
+
+        try:
+            if getattr(self.agent, "tts", None):
+                self.agent.tts.shutdown()
+        except Exception as e:
+            logger.warning("TTS shutdown failed: %s", e)
+
+        super().closeEvent(event)
