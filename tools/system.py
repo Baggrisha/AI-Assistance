@@ -1,43 +1,15 @@
-import base64
+import datetime
 import json
 import re
-import shutil
 import subprocess
-import time
-from typing import Any, Literal
+from typing import Any, Literal, Union, Optional, Iterable
 
+import EventKit
+import Foundation
 import requests
 
-
-Section = Literal["all", "cpu", "memory", "disk", "battery", "wifi", "gpu", "hardware"]
-
-
-def _run(cmd: list[str]) -> str:
-    return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
-
-
-def _osascript(script: str) -> str:
-    return _run(["osascript", "-e", script])
-
-
-def _do_shell(cmd: str) -> str:
-    cmd_escaped = cmd.replace("\\", "\\\\").replace('"', '\\"')
-    return _osascript(f'do shell script "{cmd_escaped}"')
-
-
-def _safe_int(x: str) -> int | None:
-    try:
-        return int(x)
-    except Exception:
-        return None
-
-
-def _safe_float(x: str) -> float | None:
-    try:
-        return float(x)
-    except Exception:
-        return None
-
+from tools.utilits import _resolve_weather_days, _do_shell, _safe_float, _safe_int, Section, _osascript, \
+    _nsdate_from_dt, parse_dt, _normalize_allowlist
 
 
 def _cpu_state() -> dict[str, Any]:
@@ -126,7 +98,8 @@ def _battery_state() -> dict[str, Any]:
 def _wifi_state() -> dict[str, Any]:
     iface = _do_shell(r"route get default 2>/dev/null | awk '/interface:/{print $2}' | head -n 1")
     ssid = _do_shell(r"networksetup -getairportnetwork en0 2>/dev/null | sed 's/Current Wi-Fi Network: //'")
-    airport = _do_shell(r"/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null")
+    airport = _do_shell(
+        r"/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null")
 
     def _grep_num(key: str) -> int | None:
         m = re.search(rf"^{key}:\s*(-?\d+)", airport, re.MULTILINE)
@@ -252,23 +225,18 @@ def mac_power(action: Literal["shutdown", "restart", "sleep", "hibernate"]) -> N
 
 def open_app(name: str):
     name = name.strip()
-    # Проверяем путь к приложению
-    app_path = shutil.which(name)  # для CLI-приложений
-    if app_path:
-        subprocess.run([app_path])
-        return f"{name} открыт."
-    else:
-        # Для MacOS GUI
-        try:
-            subprocess.run(["open", "-a", name], check=True)
-            return name
-        except subprocess.CalledProcessError:
-            return f"Не удалось открыть {name}."
+    try:
+        subprocess.run(["open", "-a", name], check=True)
+        return name
+    except subprocess.CalledProcessError:
+        return f"Не удалось открыть {name}."
+
 
 def set_volume(level: int):
     level = max(0, min(100, level))
     subprocess.run(["osascript", "-e", f"set volume output volume {level}"])
     return level
+
 
 def mute_system(status: bool):
     try:
@@ -277,27 +245,33 @@ def mute_system(status: bool):
     except subprocess.CalledProcessError:
         return None
 
+
 def play_media():
     subprocess.run(["osascript", "-e", 'tell application "Music" to play'])
     return None
+
 
 def pause_media():
     subprocess.run(["osascript", "-e", 'tell application "Music" to pause'])
     return None
 
+
 def next_media():
     subprocess.run(["osascript", "-e", 'tell application "Music" to next track'])
     return None
 
+
 def previous_media():
     subprocess.run(["osascript", "-e", 'tell application "Music" to previous track'])
     return None
+
 
 def get_volume():
     out = subprocess.check_output(
         ["osascript", "-e", "output volume of (get volume settings)"]
     )
     return int(out.strip())
+
 
 def change_volume(delta: int):
     current = get_volume()
@@ -327,54 +301,6 @@ def get_local_weather(when: str | int | None = None):
     lat, lon = [c.strip() for c in out.split(",")]
 
     return get_weather(f"{lat},{lon}", when=when, location=False)
-
-
-def _resolve_weather_days(when: str | int | None) -> int:
-    if when is None:
-        return 0
-
-    if isinstance(when, (int, float)) and not isinstance(when, bool):
-        return int(when)
-
-    w = str(when).lower().strip()
-    if not w or w in ("current", "now", "сейчас", "today", "сегодня", "0"):
-        return 0
-    if w in ("tomorrow", "завтра", "1"):
-        return 1
-    if w in ("послезавтра", "day after tomorrow", "2"):
-        return 2
-    if "недел" in w or "week" in w:
-        return 7
-    if w.isdigit():
-        return int(w)
-
-    digit_match = re.search(r"(\d+)", w)
-    if digit_match:
-        return int(digit_match.group(1))
-
-    word_numbers = [
-        ("четырнадц", 14),
-        ("тринадц", 13),
-        ("двенадц", 12),
-        ("одиннадц", 11),
-        ("десят", 10),
-        ("девят", 9),
-        ("восем", 8),
-        ("сем", 7),
-        ("шест", 6),
-        ("пят", 5),
-        ("четыр", 4),
-        ("три", 3),
-        ("две", 2),
-        ("два", 2),
-        ("одну", 1),
-        ("один", 1),
-    ]
-    for key, val in word_numbers:
-        if key in w:
-            return val
-
-    return 0
 
 
 def get_weather(city: str, when: str | int | None = None, location: bool = True):
@@ -446,6 +372,7 @@ def add_remind(title, notes=None, due_date=None):
     subprocess.run(["osascript", "-e", script])
     return None
 
+
 def set_timer(second: int):
     subprocess.run(
         ["shortcuts", "run", "Python Timer"],
@@ -464,8 +391,8 @@ def stopwatch(cmd: str):
     )
 
 
-def send_message(platform: str == "Telegram", to: str, text: str):
-    script = f'''
+def send_message(platform: str, to: str, text: str):
+    script = f"""
     tell application "{platform}" to activate
     delay 0.5
     tell application "System Events" 
@@ -478,6 +405,46 @@ def send_message(platform: str == "Telegram", to: str, text: str):
         keystroke "{text}"
         keystroke return
     end tell
-    '''
+    """
     s = subprocess.run(["osascript", "-e", script])
-    print(s)
+
+
+def get_events(
+    start: Union[str, datetime.date, datetime.datetime],
+    end: Union[str, datetime.date, datetime.datetime],
+    calendars_allowlist: Optional[Union[str, Iterable[str]]] = None,
+):
+    store = EventKit.EKEventStore.alloc().init()
+
+    start_dt = parse_dt(start, start=True)
+    end_dt = parse_dt(end, start=False)
+
+    start_ns = _nsdate_from_dt(start_dt)
+    end_ns = _nsdate_from_dt(end_dt)
+
+    calendars = list(store.calendarsForEntityType_(EventKit.EKEntityTypeEvent))
+
+    allow = _normalize_allowlist(calendars_allowlist)
+    if allow is not None:
+        allow_set = set(allow)
+        calendars = [c for c in calendars if str(c.title()) in allow_set]
+
+    predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
+        start_ns, end_ns, calendars
+    )
+
+    events = list(store.eventsMatchingPredicate_(predicate))
+    events.sort(key=lambda e: e.startDate().timeIntervalSince1970())
+
+    events =  [
+        {
+            "title": str(e.title() or ""),
+            "calendar": str(e.calendar().title() if e.calendar() else ""),
+            "start_epoch": int(e.startDate().timeIntervalSince1970()),
+            "end_epoch": int(e.endDate().timeIntervalSince1970()),
+            "all_day": bool(e.isAllDay()),
+            "location": str(e.location() or ""),
+        }
+        for e in events
+    ]
+    return events

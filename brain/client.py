@@ -1,3 +1,5 @@
+import threading
+
 import ollama
 
 from tools.promt import SYSTEM_PROMPT_MAIN as SYSTEM_PROMPT
@@ -6,16 +8,42 @@ from tools.promt import SYSTEM_PROMPT_MAIN as SYSTEM_PROMPT
 class LLMClient:
     def __init__(self, model: str):
         self.model = model
+        self._lock = threading.Lock()
+        self._current_stream = None
 
-    def generate(self, prompt: str):
+    def generate(self, prompt: str, stop_event: threading.Event | None = None):
         stream = ollama.generate(
             model=self.model,
-            prompt=SYSTEM_PROMPT+prompt,
+            prompt=SYSTEM_PROMPT + prompt,
             stream=True
         )
 
-        for chunk in stream:
-            yield chunk["response"]
+        with self._lock:
+            self._current_stream = stream
+
+        try:
+            for chunk in stream:
+                if stop_event and stop_event.is_set():
+                    break
+                yield chunk["response"]
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+            with self._lock:
+                if self._current_stream is stream:
+                    self._current_stream = None
+
+    def cancel(self):
+        with self._lock:
+            stream = self._current_stream
+        if stream is None:
+            return
+        try:
+            stream.close()
+        except Exception:
+            pass
 
     def warmup(self):
         """

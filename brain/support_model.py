@@ -1,4 +1,5 @@
-import json
+import threading
+
 import ollama
 
 from tools.promt import SYSTEM_PROMPT_SUPPORT as SYSTEM_PROMPT
@@ -8,8 +9,11 @@ class MiniCommandModel:
     def __init__(self, model: str = "qwen3:0.6b"):
         self.model = model
 
-    def generate(self, user_text: str) -> str:
+    def generate(self, user_text: str, stop_event: threading.Event | None = None):
         prompt = f"{SYSTEM_PROMPT}\nЗапрос: {user_text}\nОтвет:"
+
+        if stop_event and stop_event.is_set():
+            return
 
         try:
             response = ollama.generate(
@@ -20,15 +24,21 @@ class MiniCommandModel:
                     "top_p": 1.0,
                 }
             )
-            raw = response["response"].strip()
+            if stop_event and stop_event.is_set():
+                return
 
+            raw = response["response"].strip()
             if "]" in raw:
                 raw = raw[: raw.rfind("]") + 1].strip()
-            return raw
+            yield raw
 
         except Exception as e:
             print("[MiniCommandModel] Ollama error:", e)
-            return "[]"
+            yield "[]"
+
+    def cancel(self):
+        """Совместимость с интерфейсом большого LLM."""
+        return
 
     def warmup(self):
         """
